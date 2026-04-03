@@ -23,9 +23,9 @@ if mode == "Executive Overview":
     jlr_tech = None
     jlr_slice = df[df["company"] == "JLR"]
     if not jlr_slice.empty and "top_level_tech" in jlr_slice.columns:
-        tmp = jlr_slice["top_level_tech"].fillna("Other / Unmapped").value_counts()
+        tmp = technology_distribution(jlr_slice)
         if not tmp.empty:
-            jlr_tech = (tmp.idxmax(), int(tmp.max()))
+            jlr_tech = (tmp.iloc[0]["top_level_tech"], int(tmp.iloc[0]["count"]))
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Companies", int(df["company"].nunique()))
@@ -45,7 +45,7 @@ if mode == "Executive Overview":
     fig = px.line(trend_counts, x="filing_year", y="count", color="company", markers=True, title="Year-wise Filing Trend by Company")
     st.plotly_chart(fig, use_container_width=True)
 
-    tech_company = df.groupby(["company", "top_level_tech"]).size().reset_index(name="count")
+    tech_company = company_technology_heatmap(df)
     fig = px.bar(tech_company, x="company", y="count", color="top_level_tech", title="Technology Distribution by Company")
     st.plotly_chart(fig, use_container_width=True)
 
@@ -61,7 +61,7 @@ elif mode == "Company Deep Dive":
     c1, c2, c3 = st.columns(3)
     c1.metric("Total Patents", len(working))
     c2.metric("Countries", int(working["country_name"].nunique()) if "country_name" in working.columns else 0)
-    c3.metric("Technology Areas", int(working["top_level_tech"].nunique()) if "top_level_tech" in working.columns else 0)
+    c3.metric("Technology Areas", int(technology_distribution(working)["top_level_tech"].nunique()) if "top_level_tech" in working.columns else 0)
 
     trend = working.dropna(subset=["filing_year"]).copy()
     if not trend.empty:
@@ -84,8 +84,9 @@ elif mode == "Company Deep Dive":
         st.subheader("Top Technology Areas")
         st.dataframe(deep["tech"], use_container_width=True, height=320)
     with col2:
-        st.subheader("Major Patent Themes / Keywords")
-        st.dataframe(deep["keywords"], use_container_width=True, height=320)
+        st.subheader("Recent Patent Sample")
+        show_cols = [c for c in ["patent_id", "title", "filing_year", "country_name"] if c in deep["recent_patents"].columns]
+        st.dataframe(deep["recent_patents"][show_cols], use_container_width=True, height=320)
 
 elif mode == "JLR vs Selected Competitor":
     competitor = st.selectbox("Select competitor", [c for c in company_options if c != "JLR"])
@@ -102,22 +103,22 @@ elif mode == "JLR vs Selected Competitor":
         fig = px.line(trend_counts, x="filing_year", y="count", color="company", markers=True, title="Year-wise Trend Comparison")
         st.plotly_chart(fig, use_container_width=True)
 
-    tech = compare_df.groupby(["company", "top_level_tech"]).size().reset_index(name="count")
+    tech = company_technology_heatmap(compare_df)
     fig = px.bar(tech, x="top_level_tech", y="count", color="company", barmode="group", title="Technology Split Comparison")
     st.plotly_chart(fig, use_container_width=True)
 
     overlap = overlap_unique_tech(compare_df, "JLR", competitor)
     st.subheader("Overlap vs Unique Technology Areas")
     a, b, c = st.columns(3)
-    a.markdown("**Overlap**")
+    a.metric("Overlap", len(overlap["overlap"]))
     a.write(overlap["overlap"] or ["None"])
-    b.markdown("**JLR Only**")
+    b.metric("JLR Only", len(overlap["left_only"]))
     b.write(overlap["left_only"] or ["None"])
-    c.markdown("**%s Only**" % competitor)
+    c.metric("%s Only" % competitor, len(overlap["right_only"]))
     c.write(overlap["right_only"] or ["None"])
 
 elif mode == "Technology Comparison":
-    tech_options = sorted(df["top_level_tech"].fillna("Other / Unmapped").astype(str).unique().tolist())
+    tech_options = sorted(technology_distribution(df)["top_level_tech"].astype(str).unique().tolist())
     selected_tech = st.selectbox("Technology area", tech_options)
     working = df[df["top_level_tech"] == selected_tech].copy()
 

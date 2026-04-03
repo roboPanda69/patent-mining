@@ -1,18 +1,23 @@
 import streamlit as st
 import plotly.express as px
 from utils.loader import load_patents
-from utils.company_utils import inventor_count_df
+from utils.company_utils import inventor_count_df, filter_by_company
 
-df = load_patents()
+all_df = load_patents().copy()
+df = filter_by_company(all_df, ["JLR"])
 
-st.title("Patent Dashboard")
+st.title("JLR Patent Dashboard")
+st.caption("This dashboard stays focused on JLR patents, even when competitor data exists in the dataset.")
 
-col1, col2, col3, col4, col5 = st.columns(5)
-col1.metric("Total Patents", len(df))
+if df.empty:
+    st.warning("No JLR patents are available in the current dataset.")
+    st.stop()
+
+col1, col2, col3, col4 = st.columns(4)
+col1.metric("Total JLR Patents", len(df))
 col2.metric("Granted", int(df["is_granted"].sum()) if "is_granted" in df.columns else 0)
 col3.metric("Published Applications", int((df["status"] == "Published Application").sum()) if "status" in df.columns else 0)
 col4.metric("Countries", int(df["country_name"].nunique()) if "country_name" in df.columns else 0)
-col5.metric("Companies", int(df["company"].nunique()) if "company" in df.columns else 0)
 
 st.divider()
 
@@ -35,10 +40,10 @@ with col_right:
 col_left, col_right = st.columns(2)
 
 with col_left:
-    st.subheader("Top Companies")
-    company_counts = df["company"].fillna("Unassigned").value_counts().head(15).reset_index()
-    company_counts.columns = ["company", "count"]
-    fig = px.bar(company_counts.sort_values("count", ascending=True), x="count", y="company", orientation="h")
+    st.subheader("Top Countries / Jurisdictions")
+    country_counts = df["country_name"].fillna("Unknown").value_counts().head(15).reset_index()
+    country_counts.columns = ["country_name", "count"]
+    fig = px.bar(country_counts.sort_values("count", ascending=True), x="count", y="country_name", orientation="h")
     st.plotly_chart(fig, use_container_width=True)
 
 with col_right:

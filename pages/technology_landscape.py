@@ -3,6 +3,7 @@ import plotly.express as px
 from utils.loader import load_patents
 from utils.company_utils import get_company_options, filter_by_company
 from utils.cpc_utils import explode_cpc_sections
+from utils.insight_utils import get_top_mapped_technology
 
 st.title("Technology Landscape")
 st.caption("Analyze patents by CPC technology buckets and company context.")
@@ -10,14 +11,33 @@ st.caption("Analyze patents by CPC technology buckets and company context.")
 df = load_patents().copy()
 st.sidebar.header("Technology Filters")
 company_options = get_company_options(df, include_all=True)
-selected_companies = st.sidebar.multiselect("Company", company_options, default=["All"])
-df = filter_by_company(df, selected_companies)
+default_companies = ["JLR"] if "JLR" in company_options else ["All"]
+selected_companies = st.sidebar.multiselect("Company", company_options, default=default_companies)
+country_options = ["All"] + sorted(df["country_name"].dropna().astype(str).unique().tolist()) if "country_name" in df.columns else ["All"]
+status_options = ["All"] + sorted(df["status"].dropna().astype(str).unique().tolist()) if "status" in df.columns else ["All"]
+year_options = sorted(df["filing_year"].dropna().astype(int).unique().tolist()) if "filing_year" in df.columns else []
+patent_type_options = ["All"] + sorted(df["patent_type"].dropna().astype(str).unique().tolist()) if "patent_type" in df.columns else ["All"]
 
-if df.empty:
-    st.warning("No patents found for the selected company filter.")
+selected_country = st.sidebar.selectbox("Country / Jurisdiction", country_options)
+selected_status = st.sidebar.selectbox("Status", status_options)
+selected_years = st.sidebar.multiselect("Filing Year", year_options)
+selected_patent_type = st.sidebar.selectbox("Patent Type", patent_type_options)
+
+filtered = filter_by_company(df, selected_companies)
+if selected_country != "All" and "country_name" in filtered.columns:
+    filtered = filtered[filtered["country_name"] == selected_country]
+if selected_status != "All" and "status" in filtered.columns:
+    filtered = filtered[filtered["status"] == selected_status]
+if selected_years and "filing_year" in filtered.columns:
+    filtered = filtered[filtered["filing_year"].isin(selected_years)]
+if selected_patent_type != "All" and "patent_type" in filtered.columns:
+    filtered = filtered[filtered["patent_type"] == selected_patent_type]
+
+if filtered.empty:
+    st.warning("No patents found for the selected technology filters.")
     st.stop()
 
-cpc_df = explode_cpc_sections(df)
+cpc_df = explode_cpc_sections(filtered)
 if cpc_df.empty:
     st.warning("No CPC section data available in the current dataset.")
     st.stop()
@@ -27,6 +47,13 @@ bucket_counts = cpc_df["cpc_display"].value_counts().head(15).reset_index()
 bucket_counts.columns = ["cpc_display", "count"]
 fig = px.bar(bucket_counts.sort_values("count", ascending=True), x="count", y="cpc_display", orientation="h")
 st.plotly_chart(fig, use_container_width=True)
+
+if "top_level_tech" in filtered.columns:
+    top_tech, _, _, unmapped_share = get_top_mapped_technology(filtered["top_level_tech"])
+    if top_tech:
+        st.info("The clearest mapped technology signal in the current view is **%s**." % top_tech)
+    elif unmapped_share > 0:
+        st.info("A visible share of the current patents is still outside the named technology buckets, so the technology readout is directional.")
 
 st.subheader("Technology Trends Over Time")
 trend_df = cpc_df.dropna(subset=["filing_year"]).copy()
@@ -59,8 +86,7 @@ bucket_options = sorted(cpc_df["cpc_display"].dropna().astype(str).unique().toli
 selected_bucket = st.selectbox("Select a technology bucket", bucket_options)
 
 selected_ids = cpc_df[cpc_df["cpc_display"] == selected_bucket]["patent_id"].dropna().astype(str).unique().tolist()
-bucket_patents = df[df["patent_id"].astype(str).isin(selected_ids)].copy().drop_duplicates(subset=["patent_id"])
-
+bucket_patents = filtered[filtered["patent_id"].astype(str).isin(selected_ids)].copy().drop_duplicates(subset=["patent_id"])
 show_cols = ["patent_id", "title", "company", "assignee", "inventor", "country_name", "filing_year", "patent_type", "status", "top_level_tech"]
 show_cols = [c for c in show_cols if c in bucket_patents.columns]
 st.dataframe(bucket_patents[show_cols], use_container_width=True, height=420)
