@@ -2,6 +2,7 @@ import streamlit as st
 from utils.loader import load_patents
 from utils.company_utils import get_company_options, filter_by_company
 from utils.insight_utils import build_portfolio_observations, get_top_mapped_technology
+from utils.competitor_analytics import leadership_messages
 
 st.title("Executive Summary")
 st.caption("Leadership-friendly narrative summary of the current patent view.")
@@ -36,20 +37,23 @@ observations = build_portfolio_observations(filtered)
 for obs in observations:
     st.info(obs)
 
+for line in leadership_messages(filtered):
+    st.success(line)
+
 st.subheader("Why this matters to JLR")
 visible_companies = filtered["company"].fillna("Unassigned").nunique() if "company" in filtered.columns else 0
 if visible_companies > 1:
     company_counts = filtered["company"].fillna("Unassigned").value_counts()
     if "JLR" in company_counts.index:
         jlr_share = 100.0 * company_counts["JLR"] / max(int(company_counts.sum()), 1)
-        st.markdown("- JLR represents **%.1f%%** of the current filtered view, so this slice can be read against the visible competitive context." % jlr_share)
-    st.markdown("- Because multiple companies are visible here, this summary can support both portfolio tracking and competitor positioning discussions.")
+        st.markdown("- JLR represents **%.1f%%** of the current filtered view, so leadership can read this slice as both an internal portfolio signal and a live competitor benchmark." % jlr_share)
+    st.markdown("- Because multiple companies are visible here, this view is useful for portfolio positioning, white-space scans, and leadership discussion on where the portfolio is crowded versus differentiated.")
 else:
-    st.markdown("- This summary is currently focused on a single company view, so it is better suited for internal portfolio review than direct competitor comparison.")
+    st.markdown("- This is a single-company review, so leadership can use it for focused portfolio tracking without the noise of broader competitor comparison.")
 
 if "top_level_tech" in filtered.columns:
     top_tech, _, _, unmapped_share = get_top_mapped_technology(filtered["top_level_tech"])
     if top_tech:
-        st.markdown("- The clearest mapped technology signal in this view is **%s**, which is a good candidate for deeper leadership review." % top_tech)
+        st.markdown("- The clearest mapped technology signal in this view is **%s**, which is a strong candidate for leadership review, investment tracking, and patent landscaping follow-up." % top_tech)
     elif unmapped_share > 0:
         st.markdown("- A noticeable portion of the technology tagging is still unmapped, so leadership should treat the technology summary as an early directional view.")

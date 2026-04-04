@@ -9,6 +9,7 @@ st.caption("Compare two portfolio slices side by side for strategy and communica
 
 df = load_patents().copy()
 
+
 def apply_filters(data, company="All", country="All", status="All", years=None, assignee="All"):
     out = data.copy()
     if company != "All" and "company" in out.columns:
@@ -23,6 +24,7 @@ def apply_filters(data, company="All", country="All", status="All", years=None, 
         out = out[out["assignee"] == assignee]
     return out
 
+
 def apply_bucket_filter(data, bucket="All"):
     if bucket == "All" or "cpc_sections" not in data.columns:
         return data.copy()
@@ -32,6 +34,7 @@ def apply_bucket_filter(data, bucket="All"):
     ids = cpc_df[cpc_df["cpc_display"] == bucket]["patent_id"].dropna().astype(str).unique().tolist()
     return data[data["patent_id"].astype(str).isin(ids)].copy()
 
+
 def metric_block(data):
     return {
         "Total Patents": len(data),
@@ -40,6 +43,23 @@ def metric_block(data):
         "Countries": int(data["country_name"].nunique()) if "country_name" in data.columns else 0,
         "Companies": int(data["company"].nunique()) if "company" in data.columns else 0,
     }
+
+
+def render_patent_open_selector(data, label_prefix: str):
+    if data.empty or "patent_id" not in data.columns:
+        return
+    options = data[["patent_id", "title"]].dropna(subset=["patent_id"]).drop_duplicates().copy()
+    if options.empty:
+        return
+    options["display"] = options.apply(lambda r: f"{r['patent_id']} — {r.get('title', '')}", axis=1)
+    display_options = ["Select a patent"] + options["display"].tolist()
+    selected = st.selectbox("Open patent detail", display_options, key=f"open_detail_{label_prefix}")
+    if selected != "Select a patent":
+        patent_id = selected.split(" — ", 1)[0]
+        if st.button("Open Patent Detail", key=f"open_btn_{label_prefix}"):
+            st.session_state["selected_patent_id"] = patent_id
+            st.switch_page("pages/patent_detail.py")
+
 
 company_options = get_company_options(df, include_all=True)
 country_options = ["All"] + sorted(df["country_name"].dropna().astype(str).unique().tolist())
@@ -83,7 +103,10 @@ for container, title, data in [(left, "View A Metrics", view_a), (right, "View B
             cols[idx].metric(label, value)
 
 left, right = st.columns(2)
-for container, title, data in [(left, "View A Filing Trend", view_a), (right, "View B Filing Trend", view_b)]:
+for container, title, data, chart_key in [
+    (left, "View A Filing Trend", view_a, "view_a_filing_trend"),
+    (right, "View B Filing Trend", view_b, "view_b_filing_trend"),
+]:
     with container:
         st.markdown("### %s" % title)
         if data.empty or data["filing_year"].dropna().empty:
@@ -92,10 +115,13 @@ for container, title, data in [(left, "View A Filing Trend", view_a), (right, "V
             counts = data["filing_year"].dropna().astype(int).value_counts().sort_index().reset_index()
             counts.columns = ["filing_year", "count"]
             fig = px.line(counts, x="filing_year", y="count", markers=True)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, use_container_width=True, key=chart_key)
 
 left, right = st.columns(2)
-for container, title, data in [(left, "View A Technology Split", view_a), (right, "View B Technology Split", view_b)]:
+for container, title, data, chart_key in [
+    (left, "View A Technology Split", view_a, "view_a_tech_split"),
+    (right, "View B Technology Split", view_b, "view_b_tech_split"),
+]:
     with container:
         st.markdown("### %s" % title)
         if "top_level_tech" not in data.columns or data.empty:
@@ -104,4 +130,16 @@ for container, title, data in [(left, "View A Technology Split", view_a), (right
             tech = data["top_level_tech"].fillna("Other / Unmapped").value_counts().head(10).reset_index()
             tech.columns = ["top_level_tech", "count"]
             fig = px.bar(tech.sort_values("count", ascending=True), x="count", y="top_level_tech", orientation="h")
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, use_container_width=True, key=chart_key)
+
+left, right = st.columns(2)
+with left:
+    st.subheader("View A Sample")
+    show_cols = [c for c in ["patent_id", "title", "company", "assignee", "country_name", "filing_year", "status"] if c in view_a.columns]
+    st.dataframe(view_a[show_cols].head(20), use_container_width=True, height=320)
+    render_patent_open_selector(view_a.head(20), "compare_a")
+with right:
+    st.subheader("View B Sample")
+    show_cols = [c for c in ["patent_id", "title", "company", "assignee", "country_name", "filing_year", "status"] if c in view_b.columns]
+    st.dataframe(view_b[show_cols].head(20), use_container_width=True, height=320)
+    render_patent_open_selector(view_b.head(20), "compare_b")
