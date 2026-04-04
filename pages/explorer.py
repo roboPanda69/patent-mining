@@ -1,25 +1,29 @@
 import streamlit as st
-from utils.loader import load_patents
-from utils.company_utils import get_company_options
 
-df = load_patents()
+from utils.loader import load_patents
+from utils.ui_helpers import clickable_patent_table
+
+
+df = load_patents().copy()
+
 st.title("Patent Explorer")
 st.sidebar.header("Filters")
 
-company_options = get_company_options(df, include_all=False)
+company_options = sorted(df["company"].dropna().astype(str).unique()) if "company" in df.columns else []
+years = sorted(df["filing_year"].dropna().unique())
+countries = sorted(df["country_name"].dropna().astype(str).unique())
+statuses = sorted(df["status"].dropna().astype(str).unique())
+
 selected_companies = st.sidebar.multiselect("Company", company_options)
-years = sorted(df["filing_year"].dropna().astype(int).unique().tolist())
 selected_years = st.sidebar.multiselect("Filing Year", years)
-countries = sorted(df["country_name"].dropna().astype(str).unique().tolist())
 selected_countries = st.sidebar.multiselect("Country / Jurisdiction", countries)
-statuses = sorted(df["status"].dropna().astype(str).unique().tolist())
 selected_statuses = st.sidebar.multiselect("Status", statuses)
 assignee_query = st.sidebar.text_input("Assignee contains")
 inventor_query = st.sidebar.text_input("Inventor contains")
 title_query = st.sidebar.text_input("Title contains")
 
 filtered = df.copy()
-if selected_companies:
+if selected_companies and "company" in filtered.columns:
     filtered = filtered[filtered["company"].isin(selected_companies)]
 if selected_years:
     filtered = filtered[filtered["filing_year"].isin(selected_years)]
@@ -34,7 +38,14 @@ if inventor_query:
 if title_query:
     filtered = filtered[filtered["title"].fillna("").str.contains(title_query, case=False)]
 
-st.write("Showing %s patents" % len(filtered))
-show_cols = ["patent_id", "title", "company", "assignee", "inventor", "country_name", "filing_year", "status", "top_level_tech", "result_link"]
-show_cols = [c for c in show_cols if c in filtered.columns]
-st.dataframe(filtered[show_cols], use_container_width=True)
+st.write(f"Showing {len(filtered)} patents")
+clickable_patent_table(
+    filtered,
+    title="Patent Table",
+    key_prefix="explorer",
+    show_cols=[
+        "patent_id", "title", "company", "assignee", "inventor",
+        "country_name", "filing_year", "status", "result_link"
+    ],
+    height=520,
+)

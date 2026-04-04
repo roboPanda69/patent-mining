@@ -1,245 +1,158 @@
 import json
 import re
-from typing import Iterable, Optional, Tuple
+from collections import defaultdict
 
 import numpy as np
 import pandas as pd
 
-from utils.trl_config import TOPIC_ALIASES, TOPIC_ORDER
+from utils.trl_config import TOPIC_CANONICAL_MAP, MATURITY_ORDER, INSTITUTION_HINT_WORDS, UNKNOWN_VALUES
 
 
-ACADEMIC_KEYWORDS = {
-    "university", "institute", "institut", "college", "school", "laboratory",
-    "lab", "academy", "centre", "center", "research", "cnrs", "mit",
-    "faculty", "department", "dept", "hospital", "polytechnic",
-}
-
-COMPANY_STOPWORDS = {
-    "inc", "corp", "corporation", "co", "company", "gmbh", "ag", "limited",
-    "ltd", "llc", "plc", "sa", "bv", "kg", "pte", "motors", "motor",
-}
-
-TECH_KEYWORDS = {
-    "Battery Thermal Management Systems": [
-        "battery thermal", "thermal management", "cooling", "heat pipe", "liquid cooling",
-        "battery pack cooling", "thermal runaway", "heat exchanger",
-    ],
-    "Solid-State Batteries": [
-        "solid-state", "solid state", "solid electrolyte", "lithium metal", "sulfide electrolyte",
-        "oxide electrolyte", "polymer electrolyte",
-    ],
-    "Software-Defined Vehicle (SDV)": [
-        "software-defined vehicle", "software defined vehicle", "vehicle os", "vehicle operating system",
-        "central compute", "zonal architecture", "over-the-air", "ota update", "domain controller",
-    ],
-}
-
-MATURITY_BAND_ORDER = [
-    "Research-heavy",
-    "Translating to industry",
-    "Commercializing",
-    "Mature / scaled",
-]
-
-
-def safe_text(value) -> str:
-    if pd.isna(value):
-        return ""
-    return str(value).strip()
-
-
-def first_existing(df: pd.DataFrame, candidates: Iterable[str]) -> Optional[str]:
-    lower_map = {str(c).strip().lower(): c for c in df.columns}
-    for name in candidates:
-        key = str(name).strip().lower()
-        if key in lower_map:
-            return lower_map[key]
-    return None
-
-
-def is_unknown_like(value: str) -> bool:
-    text = safe_text(value).strip().lower()
-    return text in {"", "unknown", "n/a", "na", "none", "null", "unassigned"}
-
-
-def normalize_topic_name(value: str) -> str:
-    text = safe_text(value).lower()
+def canonicalize_topic(value: str) -> str:
+    text = str(value or "").strip()
     if not text:
         return "Unknown Topic"
-
-    for canonical, aliases in TOPIC_ALIASES.items():
-        if text == canonical.lower():
-            return canonical
-        if text in aliases:
-            return canonical
-        if any(alias in text for alias in aliases):
-            return canonical
-
-    for canonical, keywords in TECH_KEYWORDS.items():
-        if any(keyword in text for keyword in keywords):
-            return canonical
-
-    return value if value else "Unknown Topic"
+    key = text.lower()
+    return TOPIC_CANONICAL_MAP.get(key, text)
 
 
-def derive_topic_from_text(title: str, abstract: str, fallback_topic: str = "") -> str:
-    joined = f"{safe_text(fallback_topic)} {safe_text(title)} {safe_text(abstract)}".lower()
-    normalized = normalize_topic_name(joined)
-    if normalized != joined:
-        return normalized
-    return normalize_topic_name(fallback_topic) if fallback_topic else "Unknown Topic"
+def is_unknown(value) -> bool:
+    if pd.isna(value):
+        return True
+    return str(value).strip().lower() in UNKNOWN_VALUES
 
 
-def parse_jsonish_list(value) -> list[str]:
+def looks_like_person_name(text: str) -> bool:
+    text = str(text or "").strip()
+    if not text or any(ch.isdigit() for ch in text):
+        return False
+    words = text.split()
+    if len(words) not in {2, 3}:
+        return False
+    if any(w.lower() in INSTITUTION_HINT_WORDS for w in words):
+        return False
+    return all(w[:1].isupper() and w[1:].islower() for w in words if w)
+
+
+def clean_institution_token(text: str) -> str:
+    token = str(text or "").strip().strip("|")
+    token = re.sub(r"\s+", " ", token)
+    if not token or is_unknown(token) or looks_like_person_name(token):
+        return ""
+    parts = [p.strip() for p in token.split("|") if p.strip()]
+    deduped = []
+    seen = set()
+    for part in parts:
+        key = part.lower()
+        if key not in seen:
+            seen.add(key)
+            deduped.append(part)
+    if len(deduped) == 1:
+        return deduped[0]
+    # if the repeated value is the same institution repeated many times
+    normalized_unique = []
+    seen = set()
+    for part in deduped:
+        key = re.sub(r"\s+", " ", part.lower())
+        if key not in seen:
+            seen.add(key)
+            normalized_unique.append(part)
+    return " | ".join(normalized_unique)
+
+
+def split_institutions(value) -> list[str]:
     if pd.isna(value):
         return []
-    if isinstance(value, list):
-        return [safe_text(x) for x in value if safe_text(x)]
-    text = safe_text(value)
+    text = str(value).strip()
     if not text:
         return []
-    try:
-        parsed = json.loads(text)
-        if isinstance(parsed, list):
-            return [safe_text(x) for x in parsed if safe_text(x)]
-    except Exception:
-        pass
-    if "|" in text:
-        return [part.strip() for part in text.split("|") if part.strip()]
-    if ";" in text:
-        return [part.strip() for part in text.split(";") if part.strip()]
-    if "," in text:
-        return [part.strip() for part in text.split(",") if part.strip()]
-    return [text]
+    parts = [clean_institution_token(p) for p in text.split("|")]
+    result = []
+    seen = set()
+    for part in parts:
+        if not part:
+            continue
+        key = part.lower()
+        if key not in seen:
+            seen.add(key)
+            result.append(part)
+    return result
 
 
-def pick_year(series: pd.Series) -> pd.Series:
-    out = pd.to_numeric(series, errors="coerce")
-    return out.where(out.between(1900, 2100))
+def best_known_label(series: pd.Series, fallback: str = "Not clearly identified"):
+    temp = series.dropna().astype(str).str.strip()
+    temp = temp[~temp.str.lower().isin(UNKNOWN_VALUES)]
+    if temp.empty:
+        return fallback, 0
+    counts = temp.value_counts()
+    return counts.index[0], int(counts.iloc[0])
 
 
-def clean_org_name(value: str) -> str:
-    text = safe_text(value)
-    if not text:
-        return "Unknown"
-    text = re.sub(r"\s+", " ", text)
-    text = re.sub(r"^https?://\S+$", "", text, flags=re.I)
-    text = text.strip(" ,;|")
-    return text or "Unknown"
-
-
-def infer_org_type(name: str, source_type: str) -> str:
-    text = clean_org_name(name).lower()
-    if source_type == "paper":
-        return "Institution"
-    if any(keyword in text for keyword in ACADEMIC_KEYWORDS):
-        return "Institution"
-    return "Company"
-
-
-def best_known_mode(series: pd.Series, default: str = "N/A") -> str:
-    cleaned = series.fillna("").astype(str).map(clean_org_name)
-    cleaned = cleaned[~cleaned.map(is_unknown_like)]
-    if cleaned.empty:
-        return default
-    return cleaned.value_counts().idxmax()
-
-
-def filter_known_entities(series: pd.Series, limit: int = 12) -> pd.DataFrame:
-    cleaned = series.fillna("").astype(str).map(clean_org_name)
-    cleaned = cleaned[~cleaned.map(is_unknown_like)]
-    counts = cleaned.value_counts().head(limit).reset_index()
-    counts.columns = ["organization_name", "count"]
-    return counts
-
-
-def title_keyword_summary(series: pd.Series, top_k: int = 8) -> list[str]:
-    stop = {
-        "the", "and", "for", "with", "from", "into", "using", "based", "system", "method", "device",
-        "vehicle", "battery", "data", "analysis", "study", "review", "approach", "control", "design",
-        "first", "second", "least", "configured", "thereof", "therein", "according", "one", "two",
-    }
-    tokens = []
-    for value in series.fillna(""):
-        words = re.findall(r"[A-Za-z][A-Za-z\-]{2,}", str(value).lower())
-        tokens.extend([w for w in words if w not in stop])
-    if not tokens:
-        return []
-    counts = pd.Series(tokens).value_counts().head(top_k)
-    return counts.index.tolist()
-
-
-def maturity_band_from_metrics(paper_count: int, patent_count: int, recent_papers: int, recent_patents: int, grant_ratio: Optional[float]) -> Tuple[str, str]:
+def maturity_band_from_metrics(paper_count: int, patent_count: int, grant_ratio: float, lag_signal: float) -> tuple[str, str]:
     if paper_count <= 0 and patent_count <= 0:
-        return "Insufficient Signal", "The currently available public signals are too limited to characterize maturity with confidence."
-
-    if patent_count <= max(2, paper_count * 0.15):
-        return (
-            "Research-heavy",
-            "The topic shows stronger academic output than patenting intensity, suggesting an earlier-stage or research-led technology area.",
-        )
-
-    if patent_count < paper_count and recent_patents > 0:
-        return (
-            "Translating to industry",
-            "The topic shows visible academic depth with patenting momentum now building, indicating research-to-industry conversion.",
-        )
-
-    if patent_count >= paper_count * 0.75 and recent_patents >= recent_papers:
-        if grant_ratio is not None and grant_ratio >= 0.35:
-            return (
-                "Mature / scaled",
-                "Patenting is sustained and the grant mix is meaningful, indicating a more established and scaled commercialization pathway.",
-            )
-        return (
-            "Commercializing",
-            "Patenting activity is strong relative to visible research output, suggesting a technology area moving toward execution and productization.",
-        )
-
-    return (
-        "Commercializing",
-        "The current public signal indicates an industry-engaged topic with both technical research and patenting activity visible.",
-    )
+        return "Insufficient Signal", "Very limited visible paper or patent activity is available in the current dataset."
+    if paper_count >= patent_count * 2 and patent_count < 40:
+        return "Research-heavy", "Academic publication activity is visibly ahead of patenting, suggesting an earlier-stage technology area."
+    if patent_count > 0 and paper_count > 0 and patent_count < paper_count * 1.2:
+        return "Translating to industry", "Both research and patenting signals are visible, suggesting movement from academic work toward industry protection."
+    if patent_count >= paper_count * 1.2 and grant_ratio < 0.45:
+        return "Commercializing", "Patenting activity is strong and appears to be moving beyond pure research, although the granted share is still developing."
+    return "Mature / scaled", "Patenting depth and granted share suggest a more established and scaled technology position."
 
 
-def lag_signal(paper_year_counts: pd.Series, patent_year_counts: pd.Series) -> str:
-    if paper_year_counts.empty or patent_year_counts.empty:
-        return "Insufficient year coverage to infer a research-to-patent transition lag."
+def build_topic_metrics(normalized_df: pd.DataFrame) -> pd.DataFrame:
+    if normalized_df.empty:
+        return pd.DataFrame()
 
-    paper_peak_year = int(paper_year_counts.idxmax())
-    patent_peak_year = int(patent_year_counts.idxmax())
-    gap = patent_peak_year - paper_peak_year
+    rows = []
+    for topic, topic_df in normalized_df.groupby("topic_name"):
+        papers = topic_df[topic_df["source_type"] == "paper"].copy()
+        patents = topic_df[topic_df["source_type"] == "patent"].copy()
 
-    if gap >= 2:
-        return f"Visible patenting peaks after research by roughly {gap} years, suggesting a meaningful research-to-industry lag."
-    if gap <= -2:
-        return "Patenting appears to peak before the visible paper peak, which may indicate industry-led development or incomplete research coverage in the current data."
-    return "Paper and patent peaks appear relatively close, suggesting a tighter research-to-industry transition window in the current view."
+        paper_count = len(papers)
+        patent_count = len(patents)
+        top_institution, top_institution_count = best_known_label(papers["organization_name"]) if not papers.empty else ("Not clearly identified", 0)
+        top_company, top_company_count = best_known_label(patents["organization_name"]) if not patents.empty else ("Not clearly identified", 0)
+        grant_ratio = float(patents["is_granted"].mean()) if "is_granted" in patents.columns and not patents.empty else 0.0
+        paper_year = papers["year"].dropna().median() if not papers.empty and papers["year"].notna().any() else np.nan
+        patent_year = patents["year"].dropna().median() if not patents.empty and patents["year"].notna().any() else np.nan
+        lag_signal = float(patent_year - paper_year) if pd.notna(paper_year) and pd.notna(patent_year) else np.nan
+        maturity_band, maturity_reason = maturity_band_from_metrics(paper_count, patent_count, grant_ratio, lag_signal)
+
+        rows.append({
+            "topic_name": topic,
+            "paper_count": int(paper_count),
+            "patent_count": int(patent_count),
+            "top_institution": top_institution,
+            "top_institution_count": int(top_institution_count),
+            "top_company": top_company,
+            "top_company_count": int(top_company_count),
+            "institution_diversity": int(papers["organization_name"].dropna().nunique()) if not papers.empty else 0,
+            "company_diversity": int(patents["organization_name"].dropna().nunique()) if not patents.empty else 0,
+            "paper_citations": int(papers["citation_count"].fillna(0).sum()) if not papers.empty else 0,
+            "grant_ratio": grant_ratio,
+            "lag_signal_years": lag_signal,
+            "maturity_band": maturity_band,
+            "maturity_reason": maturity_reason,
+        })
+    out = pd.DataFrame(rows)
+    if not out.empty:
+        out["maturity_band"] = pd.Categorical(out["maturity_band"], categories=MATURITY_ORDER, ordered=True)
+        out = out.sort_values(["maturity_band", "topic_name"]).reset_index(drop=True)
+    return out
 
 
-def ordered_topics(values: Iterable[str]) -> list[str]:
-    seen = [v for v in values if safe_text(v)]
-    ordered = [t for t in TOPIC_ORDER if t in seen]
-    extras = sorted([t for t in set(seen) if t not in ordered])
-    return ordered + extras
+def papers_by_institution(papers_df: pd.DataFrame) -> pd.DataFrame:
+    if papers_df.empty:
+        return papers_df.copy()
+    if "institution_list" not in papers_df.columns:
+        papers_df = papers_df.copy()
+        papers_df["institution_list"] = papers_df["organization_name"].apply(split_institutions)
+    exploded = papers_df.copy().explode("institution_list")
+    exploded["institution_name"] = exploded["institution_list"].fillna("").astype(str).str.strip()
+    exploded = exploded[exploded["institution_name"] != ""]
+    return exploded
 
 
-def maturity_stage_rank(band: str) -> Optional[int]:
-    if band not in MATURITY_BAND_ORDER:
-        return None
-    return MATURITY_BAND_ORDER.index(band) + 1
-
-
-def maturity_progression_df() -> pd.DataFrame:
-    return pd.DataFrame(
-        {
-            "Stage": [1, 2, 3, 4],
-            "Maturity Band": MATURITY_BAND_ORDER,
-            "Meaning": [
-                "Research activity dominates; patent protection is still limited.",
-                "Research remains strong and patent activity is now building.",
-                "Industry conversion is visible and competitive IP participation is active.",
-                "Patenting is sustained and the technology looks more established.",
-            ],
-        }
-    )
+def serialise_metadata(row: dict) -> str:
+    return json.dumps(row, ensure_ascii=False)

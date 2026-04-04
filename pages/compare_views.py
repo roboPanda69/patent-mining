@@ -1,11 +1,12 @@
-import streamlit as st
 import plotly.express as px
+import streamlit as st
+
 from utils.loader import load_patents
 from utils.cpc_utils import explode_cpc_sections
-from utils.company_utils import get_company_options
+from utils.ui_helpers import clickable_patent_table, clean_named_series
 
 st.title("Compare Views")
-st.caption("Compare two portfolio slices side by side for strategy and communication.")
+st.caption("Compare two portfolio slices side-by-side.")
 
 df = load_patents().copy()
 
@@ -25,121 +26,152 @@ def apply_filters(data, company="All", country="All", status="All", years=None, 
     return out
 
 
-def apply_bucket_filter(data, bucket="All"):
+def apply_bucket_filter(data, bucket):
     if bucket == "All" or "cpc_sections" not in data.columns:
         return data.copy()
     cpc_df = explode_cpc_sections(data)
     if cpc_df.empty:
         return data.head(0).copy()
-    ids = cpc_df[cpc_df["cpc_display"] == bucket]["patent_id"].dropna().astype(str).unique().tolist()
-    return data[data["patent_id"].astype(str).isin(ids)].copy()
+    matched_ids = cpc_df[cpc_df["cpc_display"] == bucket]["patent_id"].dropna().astype(str).unique().tolist()
+    return data[data["patent_id"].astype(str).isin(matched_ids)].copy()
 
 
 def metric_block(data):
-    return {
-        "Total Patents": len(data),
-        "Granted": int((data["status"] == "Granted").sum()) if "status" in data.columns else 0,
-        "Published Applications": int((data["status"] == "Published Application").sum()) if "status" in data.columns else 0,
-        "Countries": int(data["country_name"].nunique()) if "country_name" in data.columns else 0,
-        "Companies": int(data["company"].nunique()) if "company" in data.columns else 0,
-    }
+    total = len(data)
+    granted = int(data["is_granted"].sum()) if "is_granted" in data.columns else 0
+    published = int(data["is_published"].sum()) if "is_published" in data.columns else 0
+    countries = int(clean_named_series(data["country_name"]).nunique()) if "country_name" in data.columns else 0
+    assignees = int(clean_named_series(data["assignee"]).nunique()) if "assignee" in data.columns else 0
+    return total, granted, published, countries, assignees
 
 
-def render_patent_open_selector(data, label_prefix: str):
-    if data.empty or "patent_id" not in data.columns:
+def top_label(series):
+    counts = clean_named_series(series).value_counts()
+    if counts.empty:
+        return "N/A", 0
+    return counts.index[0], int(counts.iloc[0])
+
+
+def narrative(name, data):
+    if data.empty:
+        return f"**{name}:** No patents in this filtered view."
+    total, granted, published, countries, assignees = metric_block(data)
+    country_name, country_count = top_label(data["country_name"]) if "country_name" in data.columns else ("N/A", 0)
+    assignee_name, assignee_count = top_label(data["assignee"]) if "assignee" in data.columns else ("N/A", 0)
+    status_name, status_count = top_label(data["status"]) if "status" in data.columns else ("N/A", 0)
+    return (
+        f"**{name}:** {total} patents. Leading jurisdiction: **{country_name}** ({country_count}). "
+        f"Leading assignee: **{assignee_name}** ({assignee_count}). Dominant status: **{status_name}** ({status_count})."
+    )
+
+
+def year_chart(data, title, key):
+    st.subheader(title)
+    if data.empty or "filing_year" not in data.columns or not data["filing_year"].notna().any():
+        st.info("No filing-year data available.")
         return
-    options = data[["patent_id", "title"]].dropna(subset=["patent_id"]).drop_duplicates().copy()
-    if options.empty:
+    year_counts = data["filing_year"].dropna().astype(int).value_counts().sort_index().reset_index()
+    year_counts.columns = ["filing_year", "count"]
+    fig = px.line(year_counts, x="filing_year", y="count", markers=True)
+    st.plotly_chart(fig, use_container_width=True, key=key)
+
+
+def bucket_chart(data, title, key):
+    st.subheader(title)
+    if data.empty or "cpc_sections" not in data.columns:
+        st.info("No CPC data available.")
         return
-    options["display"] = options.apply(lambda r: f"{r['patent_id']} — {r.get('title', '')}", axis=1)
-    display_options = ["Select a patent"] + options["display"].tolist()
-    selected = st.selectbox("Open patent detail", display_options, key=f"open_detail_{label_prefix}")
-    if selected != "Select a patent":
-        patent_id = selected.split(" — ", 1)[0]
-        if st.button("Open Patent Detail", key=f"open_btn_{label_prefix}"):
-            st.session_state["selected_patent_id"] = patent_id
-            st.switch_page("pages/patent_detail.py")
+    cpc_df = explode_cpc_sections(data)
+    if cpc_df.empty:
+        st.info("No CPC data available.")
+        return
+    bucket_counts = cpc_df["cpc_display"].value_counts().head(10).sort_values(ascending=True).reset_index()
+    bucket_counts.columns = ["cpc_display", "count"]
+    fig = px.bar(bucket_counts, x="count", y="cpc_display", orientation="h")
+    st.plotly_chart(fig, use_container_width=True, key=key)
 
 
-company_options = get_company_options(df, include_all=True)
-country_options = ["All"] + sorted(df["country_name"].dropna().astype(str).unique().tolist())
-status_options = ["All"] + sorted(df["status"].dropna().astype(str).unique().tolist())
-year_options = sorted(df["filing_year"].dropna().astype(int).unique().tolist())
-assignee_options = ["All"] + sorted(df["assignee"].dropna().astype(str).unique().tolist())
+company_options = ["All"] + sorted(df["company"].dropna().astype(str).unique().tolist()) if "company" in df.columns else ["All"]
+country_options = ["All"] + sorted(df["country_name"].dropna().astype(str).unique().tolist()) if "country_name" in df.columns else ["All"]
+status_options = ["All"] + sorted(df["status"].dropna().astype(str).unique().tolist()) if "status" in df.columns else ["All"]
+year_options = sorted(df["filing_year"].dropna().astype(int).unique().tolist()) if "filing_year" in df.columns else []
+assignee_options = ["All"] + sorted(df["assignee"].dropna().astype(str).unique().tolist()) if "assignee" in df.columns else ["All"]
+
 bucket_options = ["All"]
 if "cpc_sections" in df.columns:
-    cpc_df = explode_cpc_sections(df)
-    if not cpc_df.empty:
-        bucket_options += sorted(cpc_df["cpc_display"].dropna().astype(str).unique().tolist())
+    cpc_df_all = explode_cpc_sections(df)
+    if not cpc_df_all.empty:
+        bucket_options += sorted(cpc_df_all["cpc_display"].dropna().astype(str).unique().tolist())
 
-left, right = st.columns(2)
-with left:
+left_cfg, right_cfg = st.columns(2)
+with left_cfg:
     st.subheader("View A")
+    a_label = st.text_input("Label for View A", value="View A")
     a_company = st.selectbox("Company", company_options, key="a_company")
-    a_country = st.selectbox("Country", country_options, key="a_country")
+    a_country = st.selectbox("Country / Jurisdiction", country_options, key="a_country")
     a_status = st.selectbox("Status", status_options, key="a_status")
-    a_years = st.multiselect("Years", year_options, key="a_years")
+    a_years = st.multiselect("Filing Year", year_options, key="a_years")
     a_assignee = st.selectbox("Assignee", assignee_options, key="a_assignee")
     a_bucket = st.selectbox("Technology Bucket", bucket_options, key="a_bucket")
-with right:
+with right_cfg:
     st.subheader("View B")
+    b_label = st.text_input("Label for View B", value="View B")
     b_company = st.selectbox("Company", company_options, key="b_company")
-    b_country = st.selectbox("Country", country_options, key="b_country")
+    b_country = st.selectbox("Country / Jurisdiction", country_options, key="b_country")
     b_status = st.selectbox("Status", status_options, key="b_status")
-    b_years = st.multiselect("Years", year_options, key="b_years")
+    b_years = st.multiselect("Filing Year", year_options, key="b_years")
     b_assignee = st.selectbox("Assignee", assignee_options, key="b_assignee")
     b_bucket = st.selectbox("Technology Bucket", bucket_options, key="b_bucket")
 
 view_a = apply_bucket_filter(apply_filters(df, a_company, a_country, a_status, a_years, a_assignee), a_bucket)
 view_b = apply_bucket_filter(apply_filters(df, b_company, b_country, b_status, b_years, b_assignee), b_bucket)
 
-left, right = st.columns(2)
-for container, title, data in [(left, "View A Metrics", view_a), (right, "View B Metrics", view_b)]:
-    with container:
-        st.markdown("### %s" % title)
-        metrics = metric_block(data)
-        cols = st.columns(len(metrics))
-        for idx, (label, value) in enumerate(metrics.items()):
-            cols[idx].metric(label, value)
+st.divider()
+col_a, col_b = st.columns(2)
+with col_a:
+    st.markdown(f"## {a_label}")
+    total, granted, published, countries, assignees = metric_block(view_a)
+    k1, k2, k3 = st.columns(3)
+    k1.metric("Patents", total)
+    k2.metric("Granted", granted)
+    k3.metric("Published Applications", published)
+    k4, k5 = st.columns(2)
+    k4.metric("Countries", countries)
+    k5.metric("Assignees", assignees)
+    st.info(narrative(a_label, view_a))
+with col_b:
+    st.markdown(f"## {b_label}")
+    total, granted, published, countries, assignees = metric_block(view_b)
+    k1, k2, k3 = st.columns(3)
+    k1.metric("Patents", total)
+    k2.metric("Granted", granted)
+    k3.metric("Published Applications", published)
+    k4, k5 = st.columns(2)
+    k4.metric("Countries", countries)
+    k5.metric("Assignees", assignees)
+    st.info(narrative(b_label, view_b))
 
-left, right = st.columns(2)
-for container, title, data, chart_key in [
-    (left, "View A Filing Trend", view_a, "view_a_filing_trend"),
-    (right, "View B Filing Trend", view_b, "view_b_filing_trend"),
-]:
-    with container:
-        st.markdown("### %s" % title)
-        if data.empty or data["filing_year"].dropna().empty:
-            st.info("No filing-year data available.")
-        else:
-            counts = data["filing_year"].dropna().astype(int).value_counts().sort_index().reset_index()
-            counts.columns = ["filing_year", "count"]
-            fig = px.line(counts, x="filing_year", y="count", markers=True)
-            st.plotly_chart(fig, use_container_width=True, key=chart_key)
+left_chart, right_chart = st.columns(2)
+with left_chart:
+    year_chart(view_a, f"{a_label} — Filing Trend", key="compare_view_a_year")
+    bucket_chart(view_a, f"{a_label} — Top Technology Buckets", key="compare_view_a_bucket")
+with right_chart:
+    year_chart(view_b, f"{b_label} — Filing Trend", key="compare_view_b_year")
+    bucket_chart(view_b, f"{b_label} — Top Technology Buckets", key="compare_view_b_bucket")
 
-left, right = st.columns(2)
-for container, title, data, chart_key in [
-    (left, "View A Technology Split", view_a, "view_a_tech_split"),
-    (right, "View B Technology Split", view_b, "view_b_tech_split"),
-]:
-    with container:
-        st.markdown("### %s" % title)
-        if "top_level_tech" not in data.columns or data.empty:
-            st.info("No technology data available.")
-        else:
-            tech = data["top_level_tech"].fillna("Other / Unmapped").value_counts().head(10).reset_index()
-            tech.columns = ["top_level_tech", "count"]
-            fig = px.bar(tech.sort_values("count", ascending=True), x="count", y="top_level_tech", orientation="h")
-            st.plotly_chart(fig, use_container_width=True, key=chart_key)
+st.divider()
+st.subheader("Direct Comparison Summary")
+a_patents = len(view_a)
+b_patents = len(view_b)
+if a_patents > b_patents:
+    st.success(f"**{a_label}** has more patents than **{b_label}** by **{a_patents - b_patents}**.")
+elif b_patents > a_patents:
+    st.success(f"**{b_label}** has more patents than **{a_label}** by **{b_patents - a_patents}**.")
+else:
+    st.info(f"**{a_label}** and **{b_label}** have the same number of patents.")
 
-left, right = st.columns(2)
-with left:
-    st.subheader("View A Sample")
-    show_cols = [c for c in ["patent_id", "title", "company", "assignee", "country_name", "filing_year", "status"] if c in view_a.columns]
-    st.dataframe(view_a[show_cols].head(20), use_container_width=True, height=320)
-    render_patent_open_selector(view_a.head(20), "compare_a")
-with right:
-    st.subheader("View B Sample")
-    show_cols = [c for c in ["patent_id", "title", "company", "assignee", "country_name", "filing_year", "status"] if c in view_b.columns]
-    st.dataframe(view_b[show_cols].head(20), use_container_width=True, height=320)
-    render_patent_open_selector(view_b.head(20), "compare_b")
+left_table, right_table = st.columns(2)
+with left_table:
+    clickable_patent_table(view_a.head(25), f"{a_label} — Patent Preview", "compare_a")
+with right_table:
+    clickable_patent_table(view_b.head(25), f"{b_label} — Patent Preview", "compare_b")
