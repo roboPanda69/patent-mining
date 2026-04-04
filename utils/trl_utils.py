@@ -11,6 +11,7 @@ from utils.trl_config import TOPIC_ALIASES, TOPIC_ORDER
 ACADEMIC_KEYWORDS = {
     "university", "institute", "institut", "college", "school", "laboratory",
     "lab", "academy", "centre", "center", "research", "cnrs", "mit",
+    "faculty", "department", "dept", "hospital", "polytechnic",
 }
 
 COMPANY_STOPWORDS = {
@@ -33,6 +34,13 @@ TECH_KEYWORDS = {
     ],
 }
 
+MATURITY_BAND_ORDER = [
+    "Research-heavy",
+    "Translating to industry",
+    "Commercializing",
+    "Mature / scaled",
+]
+
 
 def safe_text(value) -> str:
     if pd.isna(value):
@@ -47,6 +55,11 @@ def first_existing(df: pd.DataFrame, candidates: Iterable[str]) -> Optional[str]
         if key in lower_map:
             return lower_map[key]
     return None
+
+
+def is_unknown_like(value: str) -> bool:
+    text = safe_text(value).strip().lower()
+    return text in {"", "unknown", "n/a", "na", "none", "null", "unassigned"}
 
 
 def normalize_topic_name(value: str) -> str:
@@ -110,18 +123,34 @@ def clean_org_name(value: str) -> str:
     if not text:
         return "Unknown"
     text = re.sub(r"\s+", " ", text)
-    return text.strip(" ,;|")
+    text = re.sub(r"^https?://\S+$", "", text, flags=re.I)
+    text = text.strip(" ,;|")
+    return text or "Unknown"
 
 
 def infer_org_type(name: str, source_type: str) -> str:
     text = clean_org_name(name).lower()
     if source_type == "paper":
-        if any(keyword in text for keyword in ACADEMIC_KEYWORDS):
-            return "Institution"
         return "Institution"
     if any(keyword in text for keyword in ACADEMIC_KEYWORDS):
         return "Institution"
     return "Company"
+
+
+def best_known_mode(series: pd.Series, default: str = "N/A") -> str:
+    cleaned = series.fillna("").astype(str).map(clean_org_name)
+    cleaned = cleaned[~cleaned.map(is_unknown_like)]
+    if cleaned.empty:
+        return default
+    return cleaned.value_counts().idxmax()
+
+
+def filter_known_entities(series: pd.Series, limit: int = 12) -> pd.DataFrame:
+    cleaned = series.fillna("").astype(str).map(clean_org_name)
+    cleaned = cleaned[~cleaned.map(is_unknown_like)]
+    counts = cleaned.value_counts().head(limit).reset_index()
+    counts.columns = ["organization_name", "count"]
+    return counts
 
 
 def title_keyword_summary(series: pd.Series, top_k: int = 8) -> list[str]:
@@ -193,3 +222,24 @@ def ordered_topics(values: Iterable[str]) -> list[str]:
     ordered = [t for t in TOPIC_ORDER if t in seen]
     extras = sorted([t for t in set(seen) if t not in ordered])
     return ordered + extras
+
+
+def maturity_stage_rank(band: str) -> Optional[int]:
+    if band not in MATURITY_BAND_ORDER:
+        return None
+    return MATURITY_BAND_ORDER.index(band) + 1
+
+
+def maturity_progression_df() -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "Stage": [1, 2, 3, 4],
+            "Maturity Band": MATURITY_BAND_ORDER,
+            "Meaning": [
+                "Research activity dominates; patent protection is still limited.",
+                "Research remains strong and patent activity is now building.",
+                "Industry conversion is visible and competitive IP participation is active.",
+                "Patenting is sustained and the technology looks more established.",
+            ],
+        }
+    )

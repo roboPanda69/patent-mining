@@ -3,7 +3,13 @@ import plotly.express as px
 import streamlit as st
 
 from utils.trl_loader import load_trl_normalized, load_trl_topic_metrics
-from utils.trl_utils import ordered_topics
+from utils.trl_utils import (
+    MATURITY_BAND_ORDER,
+    filter_known_entities,
+    maturity_progression_df,
+    maturity_stage_rank,
+    ordered_topics,
+)
 
 st.title("Technology Maturity Radar")
 st.caption("A topic-level research-to-patent view that helps leadership understand where technologies appear research-led, translating, or commercializing.")
@@ -26,35 +32,72 @@ topic_options = ordered_topics(metrics["topic_name"].dropna().astype(str).unique
 selected_topics = st.sidebar.multiselect("Topic", topic_options, default=topic_options)
 selected_sources = st.sidebar.multiselect("Source", ["paper", "patent"], default=["paper", "patent"])
 
-topic_filtered_metrics = metrics[metrics["topic_name"].isin(selected_topics)].copy() if selected_topics else metrics.copy()
-normalized_filtered = normalized[
-    normalized["topic_name"].isin(selected_topics) &
-    normalized["source_type"].isin(selected_sources)
-].copy() if selected_topics else normalized[normalized["source_type"].isin(selected_sources)].copy()
+if selected_topics:
+    topic_filtered_metrics = metrics[metrics["topic_name"].isin(selected_topics)].copy()
+    normalized_filtered = normalized[
+        normalized["topic_name"].isin(selected_topics) &
+        normalized["source_type"].isin(selected_sources)
+    ].copy()
+else:
+    topic_filtered_metrics = metrics.copy()
+    normalized_filtered = normalized[normalized["source_type"].isin(selected_sources)].copy()
 
 if topic_filtered_metrics.empty or normalized_filtered.empty:
     st.warning("No TRL records remain after the selected filters.")
     st.stop()
 
 # ---------------------------------------------------
-# Overview cards
+# Maturity progression guide
+# ---------------------------------------------------
+st.subheader("Maturity Band Progression")
+st.caption("The bands below move from earlier research visibility toward stronger industry conversion and scaled patenting. This is a public-signal maturity proxy, not an official certified TRL score.")
+
+progression = maturity_progression_df()
+prog_cols = st.columns(len(progression))
+for col, (_, row) in zip(prog_cols, progression.iterrows()):
+    with col:
+        with st.container(border=True):
+            st.markdown(f"**Stage {int(row['Stage'])}**")
+            st.markdown(f"{row['Maturity Band']}")
+            st.caption(row["Meaning"])
+
+st.divider()
+
+# ---------------------------------------------------
+# Overview cards / scalable summary
 # ---------------------------------------------------
 st.subheader("Topic Overview")
+st.caption("For a smaller set of topics, the radar shows card-level summaries. As the topic universe grows, the summary table below becomes the easier portfolio view.")
 
 card_topics = topic_filtered_metrics.to_dict("records")
-for start in range(0, len(card_topics), 3):
-    cols = st.columns(3)
-    for col, record in zip(cols, card_topics[start:start + 3]):
-        with col:
-            with st.container(border=True):
-                st.markdown(f"### {record['topic_name']}")
-                c1, c2 = st.columns(2)
-                c1.metric("Papers", int(record["paper_count"]))
-                c2.metric("Patents", int(record["patent_count"]))
-                st.markdown(f"**Top institution:** {record['top_institution']}")
-                st.markdown(f"**Top company:** {record['top_company']}")
-                st.markdown(f"**Maturity band:** {record['maturity_band']}")
-                st.info(record["maturity_reason"])
+show_cards = len(card_topics) <= 6
+
+if show_cards:
+    for start in range(0, len(card_topics), 3):
+        cols = st.columns(3)
+        for col, record in zip(cols, card_topics[start:start + 3]):
+            with col:
+                with st.container(border=True):
+                    st.markdown(f"### {record['topic_name']}")
+                    c1, c2 = st.columns(2)
+                    c1.metric("Papers", int(record["paper_count"]))
+                    c2.metric("Patents", int(record["patent_count"]))
+                    st.markdown(f"**Top institution:** {record['top_institution']}")
+                    st.markdown(f"**Top company:** {record['top_company']}")
+                    st.markdown(f"**Maturity band:** {record['maturity_band']}")
+                    st.info(record["maturity_reason"])
+else:
+    overview_table = topic_filtered_metrics.copy()
+    overview_table["maturity_stage"] = overview_table["maturity_band"].apply(lambda x: maturity_stage_rank(x) or 0)
+    show_cols = [
+        "topic_name", "paper_count", "patent_count", "top_institution", "top_company",
+        "maturity_band", "maturity_stage", "maturity_reason",
+    ]
+    st.dataframe(
+        overview_table[show_cols].sort_values(["maturity_stage", "paper_count", "patent_count"], ascending=[True, False, False]),
+        use_container_width=True,
+        height=320,
+    )
 
 st.divider()
 
@@ -70,6 +113,7 @@ fig = px.scatter(
     y="patent_intensity",
     size="paper_count",
     color="maturity_band",
+    category_orders={"maturity_band": MATURITY_BAND_ORDER},
     hover_name="topic_name",
     text="topic_name",
     labels={
@@ -142,39 +186,43 @@ with right:
     st.write(f"The current visible topic keywords are: **{topic_summary['topic_keywords'] or 'No clear keyword cluster yet'}**.")
     st.write("Why this matters to JLR: this view helps separate topics that still need research watching from those where competitive IP intensity may already justify stronger strategic action.")
 
-low_left, low_right = st.columns(2)
+row2_left, row2_right = st.columns(2)
 
-with low_left:
-    st.markdown("### Leading Institutions")
+with row2_left:
+    st.markdown("### Institution-Wise View")
     if paper_docs.empty:
         st.info("No paper records are available for this topic.")
     else:
-        inst_counts = paper_docs["organization_name"].fillna("Unknown").value_counts().head(12).reset_index()
-        inst_counts.columns = ["organization_name", "count"]
-        fig = px.bar(
-            inst_counts.sort_values("count", ascending=True),
-            x="count",
-            y="organization_name",
-            orientation="h",
-            labels={"count": "Paper Count", "organization_name": "Institution"},
-        )
-        st.plotly_chart(fig, use_container_width=True, key="trl_institutions")
+        inst_counts = filter_known_entities(paper_docs["organization_name"], limit=12)
+        if inst_counts.empty:
+            st.info("No clearly named institutions are visible yet for this topic.")
+        else:
+            fig = px.bar(
+                inst_counts.sort_values("count", ascending=True),
+                x="count",
+                y="organization_name",
+                orientation="h",
+                labels={"count": "Paper Count", "organization_name": "Institution"},
+            )
+            st.plotly_chart(fig, use_container_width=True, key="trl_institutions")
 
-with low_right:
-    st.markdown("### Leading Companies / Assignees")
+with row2_right:
+    st.markdown("### Company-Wise View")
     if patent_docs.empty:
         st.info("No patent records are available for this topic.")
     else:
-        company_counts = patent_docs["organization_name"].fillna("Unknown").value_counts().head(12).reset_index()
-        company_counts.columns = ["organization_name", "count"]
-        fig = px.bar(
-            company_counts.sort_values("count", ascending=True),
-            x="count",
-            y="organization_name",
-            orientation="h",
-            labels={"count": "Patent Count", "organization_name": "Company / Assignee"},
-        )
-        st.plotly_chart(fig, use_container_width=True, key="trl_companies")
+        company_counts = filter_known_entities(patent_docs["organization_name"], limit=12)
+        if company_counts.empty:
+            st.info("No clearly named companies are visible yet for this topic.")
+        else:
+            fig = px.bar(
+                company_counts.sort_values("count", ascending=True),
+                x="count",
+                y="organization_name",
+                orientation="h",
+                labels={"count": "Patent Count", "organization_name": "Company / Assignee"},
+            )
+            st.plotly_chart(fig, use_container_width=True, key="trl_companies")
 
 st.divider()
 
@@ -205,7 +253,11 @@ tab1, tab2 = st.tabs(["Papers", "Patents"])
 with tab1:
     show_cols = ["document_id", "title", "organization_name", "country", "year", "citation_count", "source_link"]
     available_cols = [c for c in show_cols if c in paper_docs.columns]
-    st.dataframe(paper_docs[available_cols].sort_values(["year", "citation_count"], ascending=[False, False]), use_container_width=True, height=380)
+    st.dataframe(
+        paper_docs[available_cols].sort_values(["year", "citation_count"], ascending=[False, False]),
+        use_container_width=True,
+        height=380,
+    )
 
 with tab2:
     show_cols = ["document_id", "title", "organization_name", "country", "year", "patent_status", "source_link"]

@@ -1,4 +1,5 @@
 import os
+import re
 from typing import Any
 
 import pandas as pd
@@ -6,25 +7,90 @@ import streamlit as st
 
 from utils.trl_config import NORMALIZED_PATH, PAPER_PATH, PATENT_PATH
 from utils.trl_utils import (
+    best_known_mode,
     clean_org_name,
     derive_topic_from_text,
     first_existing,
-    infer_org_type,
     lag_signal,
     maturity_band_from_metrics,
     normalize_topic_name,
     ordered_topics,
-    parse_jsonish_list,
     pick_year,
     safe_text,
     title_keyword_summary,
 )
+
+ACADEMIC_MARKERS = [
+    "university", "institute", "institut", "college", "school", "academy", "laboratory",
+    "centre", "center", "faculty", "department", "dept", "hospital", "polytechnic",
+]
+
+COUNTRY_CODE_MAP = {
+    "KR": "South Korea", "HK": "Hong Kong", "CN": "China", "AU": "Australia", "CA": "Canada",
+    "IE": "Ireland", "FR": "France", "IT": "Italy", "AE": "United Arab Emirates", "GB": "United Kingdom",
+    "US": "United States", "DE": "Germany", "JP": "Japan", "IN": "India", "SE": "Sweden",
+    "NL": "Netherlands", "CH": "Switzerland", "ES": "Spain",
+}
 
 
 def _clean_common_columns(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
     out.columns = [str(c).strip() for c in out.columns]
     return out
+
+
+def _is_url_like(text: str) -> bool:
+    return bool(re.match(r"^https?://", text, flags=re.I))
+
+
+def _is_boolean_like(text: str) -> bool:
+    return text.lower() in {"true", "false"}
+
+
+def _is_country_code_like(text: str) -> bool:
+    stripped = text.strip()
+    return stripped.upper() in COUNTRY_CODE_MAP
+
+
+def _is_plausible_org_name(text: str) -> bool:
+    value = clean_org_name(text)
+    lower = value.lower()
+    if not value or value == "Unknown":
+        return False
+    if _is_url_like(value) or _is_boolean_like(value):
+        return False
+    if _is_country_code_like(value):
+        return False
+    if re.fullmatch(r"[0-9.\-]+", value):
+        return False
+    if any(marker in lower for marker in ACADEMIC_MARKERS):
+        return True
+    if len(value) < 6:
+        return False
+    if value.isupper() and len(value) <= 5:
+        return False
+    if "http" in lower or "doi" in lower or "cc-by" in lower:
+        return False
+    return bool(re.search(r"[A-Za-z]", value)) and (" " in value or any(ch.islower() for ch in value))
+
+
+def _extract_best_paper_org_and_country(row: pd.Series) -> tuple[str, str]:
+    values = [safe_text(v) for v in row.tolist() if safe_text(v)]
+    org_candidates = []
+    country_candidates = []
+
+    for value in values:
+        cleaned = clean_org_name(value)
+        if _is_country_code_like(cleaned):
+            country_candidates.append(COUNTRY_CODE_MAP.get(cleaned.upper(), cleaned.upper()))
+            continue
+        if _is_plausible_org_name(cleaned):
+            org_candidates.append(cleaned)
+
+    preferred_org = next((v for v in org_candidates if any(marker in v.lower() for marker in ACADEMIC_MARKERS)), "")
+    org = preferred_org or (org_candidates[0] if org_candidates else "Unknown")
+    country = country_candidates[0] if country_candidates else "Unknown"
+    return org, country
 
 
 def normalize_trl_papers(df: pd.DataFrame) -> pd.DataFrame:
@@ -40,7 +106,7 @@ def normalize_trl_papers(df: pd.DataFrame) -> pd.DataFrame:
     paper_id_col = first_existing(df, ["id", "openalex_id", "work_id"])
     language_col = first_existing(df, ["language"])
 
-    out = pd.DataFrame()
+    out = pd.DataFrame(index=df.index)
     out["topic_name"] = df[topic_col].apply(normalize_topic_name) if topic_col else "Unknown Topic"
     out["source_type"] = "paper"
     out["document_id"] = df[paper_id_col].astype(str) if paper_id_col else df.index.astype(str)
@@ -59,27 +125,18 @@ def normalize_trl_papers(df: pd.DataFrame) -> pd.DataFrame:
 
     authorish_cols = [c for c in df.columns if str(c).lower().startswith("authorship")]
     if authorish_cols:
-        org_candidates = []
-        country_candidates = []
-        for _, row in df[authorish_cols].iterrows():
-            values = [safe_text(v) for v in row.tolist() if safe_text(v)]
-            org_value = next((v for v in values if any(k in v.lower() for k in ["university", "institute", "college", "school", "academy", "laboratory", "centre", "center"])), "")
-            org_candidates.append(clean_org_name(org_value or (values[0] if values else "Unknown")))
-
-            country_value = next((v for v in values if len(v) in {2, 3} and v.upper() == v), "")
-            country_candidates.append(country_value or "Unknown")
-
-        out["organization_name"] = pd.Series(org_candidates, index=df.index)
-        out["institution"] = pd.Series(org_candidates, index=df.index)
-        out["organization_type"] = "Institution"
-        out["country"] = pd.Series(country_candidates, index=df.index)
+        extracted = df[authorish_cols].apply(_extract_best_paper_org_and_country, axis=1, result_type="expand")
+        extracted.columns = ["organization_name", "country"]
+        out["organization_name"] = extracted["organization_name"].map(clean_org_name)
+        out["institution"] = out["organization_name"]
+        out["country"] = extracted["country"].fillna("Unknown").astype(str)
 
     out["topic_name"] = [
         derive_topic_from_text(title, abstract, topic)
         for title, abstract, topic in zip(out["title"], out["abstract_or_summary"], out["topic_name"])
     ]
 
-    return out
+    return out.reset_index(drop=True)
 
 
 def normalize_trl_patents(df: pd.DataFrame) -> pd.DataFrame:
@@ -100,7 +157,7 @@ def normalize_trl_patents(df: pd.DataFrame) -> pd.DataFrame:
     status_col = first_existing(df, ["status"])
     link_col = first_existing(df, ["result_link", "source_link"])
 
-    out = pd.DataFrame()
+    out = pd.DataFrame(index=df.index)
     out["topic_name"] = df[topic_col].apply(normalize_topic_name) if topic_col else "Unknown Topic"
     out["source_type"] = "patent"
     out["document_id"] = df[patent_id_col].astype(str) if patent_id_col else df.index.astype(str)
@@ -132,7 +189,7 @@ def normalize_trl_patents(df: pd.DataFrame) -> pd.DataFrame:
         for title, abstract, topic in zip(out["title"], out["abstract_or_summary"], out["topic_name"])
     ]
 
-    return out
+    return out.reset_index(drop=True)
 
 
 def build_trl_topic_metrics(normalized: pd.DataFrame) -> pd.DataFrame:
@@ -147,15 +204,16 @@ def build_trl_topic_metrics(normalized: pd.DataFrame) -> pd.DataFrame:
 
         paper_count = len(paper_df)
         patent_count = len(patent_df)
-        recent_cutoff = int(topic_df["year"].dropna().max()) - 3 if topic_df["year"].dropna().any() else None
+        year_series = topic_df["year"].dropna()
+        recent_cutoff = int(year_series.max()) - 3 if not year_series.empty else None
         recent_papers = int((paper_df["year"] >= recent_cutoff).sum()) if recent_cutoff is not None else 0
         recent_patents = int((patent_df["year"] >= recent_cutoff).sum()) if recent_cutoff is not None else 0
 
-        top_institution = paper_df["organization_name"].fillna("Unknown").value_counts().idxmax() if paper_count else "N/A"
-        top_company = patent_df["organization_name"].fillna("Unknown").value_counts().idxmax() if patent_count else "N/A"
+        top_institution = best_known_mode(paper_df["organization_name"], default="Not clearly visible yet") if paper_count else "Not clearly visible yet"
+        top_company = best_known_mode(patent_df["organization_name"], default="Not clearly visible yet") if patent_count else "Not clearly visible yet"
 
-        institution_diversity = int(paper_df["organization_name"].fillna("Unknown").nunique()) if paper_count else 0
-        company_diversity = int(patent_df["organization_name"].fillna("Unknown").nunique()) if patent_count else 0
+        institution_diversity = int(paper_df["organization_name"].fillna("Unknown").replace("", "Unknown").nunique()) if paper_count else 0
+        company_diversity = int(patent_df["organization_name"].fillna("Unknown").replace("", "Unknown").nunique()) if patent_count else 0
         avg_citations = float(paper_df["citation_count"].fillna(0).mean()) if paper_count else 0.0
         grant_ratio = float(patent_df["grant_flag"].mean()) if patent_count and "grant_flag" in patent_df.columns else None
 
