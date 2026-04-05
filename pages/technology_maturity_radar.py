@@ -12,7 +12,7 @@ from utils.trl_loader import (
     load_trl_topic_metrics,
 )
 from utils.trl_utils import best_known_label
-from utils.ui_helpers import clickable_patent_table
+from utils.ui_helpers import clickable_patent_table, clean_named_series
 
 st.title("Technology Maturity Radar")
 st.caption("A topic-level view of how research activity translates into patenting and commercial maturity signals.")
@@ -28,34 +28,40 @@ if normalized.empty or metrics.empty:
     st.stop()
 
 all_topics = sorted(metrics["topic_name"].dropna().astype(str).unique().tolist())
+trl_stage_options = sorted(metrics["trl_stage_band"].dropna().astype(str).unique().tolist()) if "trl_stage_band" in metrics.columns else []
 
 st.sidebar.header("Radar Filters")
 selected_topics = st.sidebar.multiselect("Topics", all_topics, default=all_topics)
 selected_maturity = st.sidebar.multiselect("Maturity Band", MATURITY_ORDER, default=MATURITY_ORDER)
+selected_trl_bands = st.sidebar.multiselect("TRL-style Stage", trl_stage_options, default=trl_stage_options)
 
 view_metrics = metrics.copy()
 if selected_topics:
     view_metrics = view_metrics[view_metrics["topic_name"].isin(selected_topics)]
 if selected_maturity:
     view_metrics = view_metrics[view_metrics["maturity_band"].astype(str).isin(selected_maturity)]
+if selected_trl_bands and "trl_stage_band" in view_metrics.columns:
+    view_metrics = view_metrics[view_metrics["trl_stage_band"].astype(str).isin(selected_trl_bands)]
 
 if view_metrics.empty:
     st.warning("No topics available for the selected filters.")
     st.stop()
 
-st.subheader("Maturity Band Progression")
+st.subheader("TRL-style Progression")
 progress_df = pd.DataFrame({
-    "Stage": MATURITY_ORDER,
+    "TRL-style Stage": ["TRL-like 1-3", "TRL-like 4-6", "TRL-like 7-9"],
     "Meaning": [
-        "Academic and research signals are stronger than patenting signals.",
-        "Research is visibly translating into industry and patent activity.",
-        "Patenting is accelerating and the topic appears to be moving toward application and deployment.",
-        "The topic shows stronger patent depth and a more established industry position.",
-    ]
+        "Research and feasibility signals dominate; patenting remains comparatively limited.",
+        "Research and patenting are both visible, indicating technology development and demonstration.",
+        "Patent depth and commercialization signals are stronger, pointing toward pilot, launch, and scaled industry activity.",
+    ],
 })
 st.dataframe(progress_df, use_container_width=True, hide_index=True)
 
 st.subheader("Topic Overview")
+overview_cols = [
+    "topic_name", "paper_count", "patent_count", "top_institution", "top_company", "maturity_band", "trl_stage_band", "trl_stage_score"
+]
 if len(view_metrics) <= 6:
     cols = st.columns(min(3, max(1, len(view_metrics))))
     for i, (_, row) in enumerate(view_metrics.iterrows()):
@@ -67,13 +73,11 @@ if len(view_metrics) <= 6:
                 st.write(f"**Top Institution:** {row['top_institution']}")
                 st.write(f"**Top Company:** {row['top_company']}")
                 st.success(f"**Maturity Band:** {row['maturity_band']}")
+                if "trl_stage_band" in row:
+                    st.info(f"**Visible TRL-style Stage:** {row['trl_stage_band']} ({row['trl_stage_name']})")
                 st.caption(row["maturity_reason"])
 else:
-    st.dataframe(
-        view_metrics[["topic_name", "paper_count", "patent_count", "top_institution", "top_company", "maturity_band"]],
-        use_container_width=True,
-        hide_index=True,
-    )
+    st.dataframe(view_metrics[[c for c in overview_cols if c in view_metrics.columns]], use_container_width=True, hide_index=True)
 
 st.divider()
 st.subheader("Research vs Patent Matrix")
@@ -83,7 +87,7 @@ fig = px.scatter(
     x="paper_count",
     y="patent_count",
     size=np.maximum(scatter_df["paper_citations"].fillna(0), 1),
-    color="maturity_band",
+    color="trl_stage_band" if "trl_stage_band" in scatter_df.columns else "maturity_band",
     hover_name="topic_name",
     text="topic_name",
 )
@@ -100,11 +104,14 @@ topic_metric = metrics[metrics["topic_name"] == selected_topic].iloc[0]
 st.divider()
 st.subheader(f"Topic Deep-Dive — {selected_topic}")
 
-a, b, c = st.columns(3)
+a, b, c, d = st.columns(4)
 a.metric("Papers", int(topic_metric["paper_count"]))
 b.metric("Patents", int(topic_metric["patent_count"]))
 c.metric("Maturity Band", str(topic_metric["maturity_band"]))
+d.metric("TRL-style Stage", str(topic_metric.get("trl_stage_score", "-")))
 st.info(topic_metric["maturity_reason"])
+if "trl_stage_reason" in topic_metric:
+    st.caption(f"{topic_metric['trl_stage_band']} — {topic_metric['trl_stage_name']}. {topic_metric['trl_stage_reason']}")
 
 trend_rows = []
 if not topic_papers.empty and topic_papers["year"].notna().any():
@@ -125,21 +132,29 @@ with left:
     if topic_papers_inst.empty:
         st.info("No institution-level paper data is visible for this topic.")
     else:
-        inst_counts = topic_papers_inst["institution_name"].value_counts().head(12).sort_values(ascending=True).reset_index()
-        inst_counts.columns = ["institution_name", "count"]
-        fig = px.bar(inst_counts, x="count", y="institution_name", orientation="h")
-        st.plotly_chart(fig, use_container_width=True, key="trl_inst_view")
+        inst_series = clean_named_series(topic_papers_inst["institution_name"], fallback="Unknown")
+        inst_series = inst_series[inst_series.str.lower() != "unknown"]
+        if inst_series.empty:
+            st.info("No clean institution-level paper signal is visible for this topic.")
+        else:
+            inst_counts = inst_series.value_counts().head(12).sort_values(ascending=True).reset_index()
+            inst_counts.columns = ["institution_name", "count"]
+            fig = px.bar(inst_counts, x="count", y="institution_name", orientation="h")
+            st.plotly_chart(fig, use_container_width=True, key="trl_inst_view")
 with right:
     st.subheader("Company-Wise Patent View")
     if topic_patents.empty:
         st.info("No patent data is visible for this topic.")
     else:
-        company_counts = topic_patents["organization_name"].dropna().astype(str).str.strip()
-        company_counts = company_counts[company_counts != ""]
-        company_counts = company_counts.value_counts().head(12).sort_values(ascending=True).reset_index()
-        company_counts.columns = ["organization_name", "count"]
-        fig = px.bar(company_counts, x="count", y="organization_name", orientation="h")
-        st.plotly_chart(fig, use_container_width=True, key="trl_company_view")
+        company_counts = clean_named_series(topic_patents["organization_name"], fallback="Unknown")
+        company_counts = company_counts[company_counts.str.lower() != "unknown"]
+        if company_counts.empty:
+            st.info("No clean company patent signal is visible for this topic.")
+        else:
+            company_counts = company_counts.value_counts().head(12).sort_values(ascending=True).reset_index()
+            company_counts.columns = ["organization_name", "count"]
+            fig = px.bar(company_counts, x="count", y="organization_name", orientation="h")
+            st.plotly_chart(fig, use_container_width=True, key="trl_company_view")
 
 inst_label, inst_count = best_known_label(topic_papers_inst["institution_name"]) if not topic_papers_inst.empty else ("Not clearly identified", 0)
 comp_label, comp_count = best_known_label(topic_patents["organization_name"]) if not topic_patents.empty else ("Not clearly identified", 0)
@@ -155,10 +170,6 @@ clickable_patent_table(
     show_cols=["document_id", "title", "organization_name", "assignee", "country", "year", "status"],
     height=380,
 )
-
-# compatibility for patent detail page expecting patent_id
-if not topic_patents.empty and "document_id" in topic_patents.columns:
-    pass
 
 st.divider()
 st.subheader("Institution Lens")

@@ -1,9 +1,8 @@
 import os
-import json
 import pandas as pd
 import streamlit as st
 
-from utils.trl_utils import build_topic_metrics, canonicalize_topic, split_institutions, papers_by_institution
+from utils.trl_utils import build_topic_metrics, canonicalize_topic, split_institutions, papers_by_institution, derive_country_from_institutions
 
 TRL_PAPERS_PATH = "data/trl_papers.parquet"
 TRL_PATENTS_PATH = "data/trl_patents.parquet"
@@ -21,6 +20,13 @@ def load_trl_papers() -> pd.DataFrame:
     if "organization_name" in df.columns:
         df["organization_name"] = df["organization_name"].fillna("").astype(str).str.strip()
         df["organization_name"] = df["organization_name"].apply(lambda x: " | ".join(split_institutions(x)) if x else "")
+    if "institution_list" not in df.columns:
+        source_col = "organization_name" if "organization_name" in df.columns else pd.Series([""] * len(df))
+        df["institution_list"] = source_col.apply(split_institutions)
+    if "country" in df.columns:
+        missing_country = df["country"].fillna("").astype(str).str.strip() == ""
+        if missing_country.any():
+            df.loc[missing_country, "country"] = df.loc[missing_country, "institution_list"].apply(derive_country_from_institutions)
     return df
 
 
@@ -58,7 +64,9 @@ def load_trl_normalized() -> pd.DataFrame:
 def load_trl_topic_metrics() -> pd.DataFrame:
     if os.path.exists(TRL_TOPIC_METRICS_PATH):
         metrics = pd.read_parquet(TRL_TOPIC_METRICS_PATH).copy()
-        return metrics
+        required = {"trl_stage_score", "trl_stage_band", "trl_stage_name", "trl_stage_reason"}
+        if required.issubset(metrics.columns):
+            return metrics
     normalized = load_trl_normalized()
     return build_topic_metrics(normalized)
 

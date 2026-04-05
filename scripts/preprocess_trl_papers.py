@@ -1,12 +1,10 @@
 import os
-import re
 import pandas as pd
 
-from utils.trl_utils import canonicalize_topic, split_institutions
+from utils.trl_utils import canonicalize_topic, split_institutions, derive_country_from_institutions
 
 INPUT_PATH = "data/trl_papers.csv"
 OUTPUT_PATH = "data/trl_papers.parquet"
-
 
 TOPIC_CANDIDATES = ["topic", "Topic"]
 TITLE_CANDIDATES = ["display_name", "title", "Title"]
@@ -33,7 +31,6 @@ def guess_institution_column(df: pd.DataFrame):
             return col
     authorship_cols = [c for c in df.columns if str(c).lower().startswith("authorship")]
     if authorship_cols:
-        # choose the column with the highest rate of pipe-separated strings / university keywords
         best_col = None
         best_score = -1
         for col in authorship_cols:
@@ -46,23 +43,6 @@ def guess_institution_column(df: pd.DataFrame):
                 best_col = col
         return best_col
     return None
-
-
-def derive_country_from_institutions(institutions: list[str]) -> str:
-    # leave blank for now unless a clear country token exists inside the string
-    country_terms = [
-        "india", "china", "japan", "korea", "united kingdom", "uk", "united states", "usa",
-        "germany", "france", "australia", "canada", "italy", "spain", "sweden", "switzerland"
-    ]
-    joined = " | ".join(institutions).lower()
-    for term in country_terms:
-        if term in joined:
-            if term == "uk":
-                return "United Kingdom"
-            if term == "usa":
-                return "United States"
-            return term.title()
-    return ""
 
 
 def main():
