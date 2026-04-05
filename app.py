@@ -18,8 +18,11 @@ pages = [
 if os.path.exists("pages/competitor_intelligence.py"):
     pages.insert(6, st.Page("pages/competitor_intelligence.py", title="Competitor Intelligence", icon="🏁"))
 
+if os.path.exists("pages/technology_classification.py"):
+    pages.insert(7, st.Page("pages/technology_classification.py", title="Technology Classification", icon="🧩"))
+
 if os.path.exists("pages/technology_maturity_radar.py"):
-    pages.insert(7, st.Page("pages/technology_maturity_radar.py", title="Technology Maturity Radar", icon="🛰️"))
+    pages.insert(8, st.Page("pages/technology_maturity_radar.py", title="Technology Maturity Radar", icon="🛰️"))
 
 pg = st.navigation(pages)
 pg.run()
