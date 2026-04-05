@@ -11,8 +11,8 @@ from utils.trl_loader import (
     load_trl_papers_by_institution,
     load_trl_topic_metrics,
 )
-from utils.trl_utils import best_known_label, format_trl_band_from_score, format_trl_label
-from utils.ui_helpers import clean_named_series
+from utils.trl_utils import best_known_label
+from utils.ui_helpers import clickable_patent_table, clean_named_series
 
 st.title("Technology Maturity Radar")
 st.caption("A topic-level view of how research activity translates into patenting and commercial maturity signals.")
@@ -27,36 +27,29 @@ if normalized.empty or metrics.empty:
     st.warning("No TRL dataset is available yet. Run the TRL preprocessing scripts first.")
     st.stop()
 
-if "trl_stage_score" in metrics.columns:
-    metrics["trl_label"] = metrics["trl_stage_score"].apply(format_trl_label)
-    metrics["trl_stage_display"] = metrics["trl_stage_score"].apply(format_trl_band_from_score)
-else:
-    metrics["trl_label"] = "TRL -"
-    metrics["trl_stage_display"] = metrics.get("trl_stage_band", pd.Series(index=metrics.index, dtype=object)).fillna("TRL Unknown")
-
 all_topics = sorted(metrics["topic_name"].dropna().astype(str).unique().tolist())
-trl_stage_options = sorted(metrics["trl_stage_display"].dropna().astype(str).unique().tolist()) if "trl_stage_display" in metrics.columns else []
+trl_stage_options = sorted(metrics["trl_stage_band"].dropna().astype(str).unique().tolist()) if "trl_stage_band" in metrics.columns else []
 
 st.sidebar.header("Radar Filters")
 selected_topics = st.sidebar.multiselect("Topics", all_topics, default=all_topics)
 selected_maturity = st.sidebar.multiselect("Maturity Band", MATURITY_ORDER, default=MATURITY_ORDER)
-selected_trl_bands = st.sidebar.multiselect("TRL Stage", trl_stage_options, default=trl_stage_options)
+selected_trl_bands = st.sidebar.multiselect("TRL-style Stage", trl_stage_options, default=trl_stage_options)
 
 view_metrics = metrics.copy()
 if selected_topics:
     view_metrics = view_metrics[view_metrics["topic_name"].isin(selected_topics)]
 if selected_maturity:
     view_metrics = view_metrics[view_metrics["maturity_band"].astype(str).isin(selected_maturity)]
-if selected_trl_bands and "trl_stage_display" in view_metrics.columns:
-    view_metrics = view_metrics[view_metrics["trl_stage_display"].astype(str).isin(selected_trl_bands)]
+if selected_trl_bands and "trl_stage_band" in view_metrics.columns:
+    view_metrics = view_metrics[view_metrics["trl_stage_band"].astype(str).isin(selected_trl_bands)]
 
 if view_metrics.empty:
     st.warning("No topics available for the selected filters.")
     st.stop()
 
-st.subheader("TRL Progression")
+st.subheader("TRL-style Progression")
 progress_df = pd.DataFrame({
-    "TRL Stage": ["TRL 1-3", "TRL 4-6", "TRL 7-9"],
+    "TRL-style Stage": ["TRL-like 1-3", "TRL-like 4-6", "TRL-like 7-9"],
     "Meaning": [
         "Research and feasibility signals dominate; patenting remains comparatively limited.",
         "Research and patenting are both visible, indicating technology development and demonstration.",
@@ -67,7 +60,7 @@ st.dataframe(progress_df, use_container_width=True, hide_index=True)
 
 st.subheader("Topic Overview")
 overview_cols = [
-    "topic_name", "paper_count", "patent_count", "top_institution", "top_company", "maturity_band", "trl_label", "trl_stage_display"
+    "topic_name", "paper_count", "patent_count", "top_institution", "top_company", "maturity_band", "trl_stage_band", "trl_stage_score"
 ]
 if len(view_metrics) <= 6:
     cols = st.columns(min(3, max(1, len(view_metrics))))
@@ -80,10 +73,8 @@ if len(view_metrics) <= 6:
                 st.write(f"**Top Institution:** {row['top_institution']}")
                 st.write(f"**Top Company:** {row['top_company']}")
                 st.success(f"**Maturity Band:** {row['maturity_band']}")
-                if "trl_label" in row:
-                    stage_display = row.get("trl_stage_display", "")
-                    stage_name = row.get("trl_stage_name", "")
-                    st.info(f"**Visible Stage:** {row['trl_label']} — {stage_display} ({stage_name})")
+                if "trl_stage_band" in row:
+                    st.info(f"**Visible TRL-style Stage:** {row['trl_stage_band']} ({row['trl_stage_name']})")
                 st.caption(row["maturity_reason"])
 else:
     st.dataframe(view_metrics[[c for c in overview_cols if c in view_metrics.columns]], use_container_width=True, hide_index=True)
@@ -96,7 +87,7 @@ fig = px.scatter(
     x="paper_count",
     y="patent_count",
     size=np.maximum(scatter_df["paper_citations"].fillna(0), 1),
-    color="trl_stage_display" if "trl_stage_display" in scatter_df.columns else "maturity_band",
+    color="trl_stage_band" if "trl_stage_band" in scatter_df.columns else "maturity_band",
     hover_name="topic_name",
     text="topic_name",
 )
@@ -117,10 +108,10 @@ a, b, c, d = st.columns(4)
 a.metric("Papers", int(topic_metric["paper_count"]))
 b.metric("Patents", int(topic_metric["patent_count"]))
 c.metric("Maturity Band", str(topic_metric["maturity_band"]))
-d.metric("TRL Stage", str(topic_metric.get("trl_label", format_trl_label(topic_metric.get("trl_stage_score", "-")))))
+d.metric("TRL-style Stage", str(topic_metric.get("trl_stage_score", "-")))
 st.info(topic_metric["maturity_reason"])
 if "trl_stage_reason" in topic_metric:
-    st.caption(f"{topic_metric.get('trl_stage_display', format_trl_band_from_score(topic_metric.get('trl_stage_score', 0)))} — {topic_metric['trl_stage_name']}. {topic_metric['trl_stage_reason']}")
+    st.caption(f"{topic_metric['trl_stage_band']} — {topic_metric['trl_stage_name']}. {topic_metric['trl_stage_reason']}")
 
 trend_rows = []
 if not topic_papers.empty and topic_papers["year"].notna().any():
@@ -171,12 +162,12 @@ st.caption(
     f"Top visible institution for this topic is **{inst_label}** ({inst_count} papers), while the strongest visible company patenting presence is **{comp_label}** ({comp_count} patents)."
 )
 
-
 st.divider()
-st.subheader("Institution Lens")
+st.subheader("Academic Institution Lens (papers only)")
+st.caption("This section looks only at research paper affiliations. It does not combine paper and patent counts together.")
 all_institutions = sorted(topic_papers_inst["institution_name"].dropna().astype(str).unique().tolist()) if not topic_papers_inst.empty else []
 if all_institutions:
-    selected_institution = st.selectbox("Select an institution", all_institutions)
+    selected_institution = st.selectbox("Select an academic institution", all_institutions)
     inst_df = papers_inst[papers_inst["institution_name"] == selected_institution].copy()
     inst_topic_counts = inst_df["topic_name"].value_counts().reset_index()
     inst_topic_counts.columns = ["topic_name", "count"]
@@ -184,7 +175,31 @@ if all_institutions:
     st.plotly_chart(fig, use_container_width=True, key="trl_institution_lens")
     st.info(
         f"{selected_institution} appears in **{len(inst_df)} paper records** across the visible topic set. "
-        "This can help identify potential academic talent and collaboration pools by technology domain."
+        "Use this as a research-affiliation view to spot academic depth and potential university collaboration pools by topic."
     )
 else:
-    st.info("No institution-level paper data is available for the Institution Lens yet.")
+    st.info("No institution-level paper data is available for the academic institution lens yet.")
+
+st.subheader("Patent Organization Lens")
+st.caption("This section looks only at patent organizations / assignees. It does not combine patent and paper counts together.")
+if not patents.empty and "organization_name" in patents.columns:
+    patent_org_series = clean_named_series(patents["organization_name"], fallback="Unknown")
+    all_patent_orgs = sorted(patent_org_series[patent_org_series.str.lower() != "unknown"].unique().tolist())
+else:
+    patent_org_series = pd.Series(dtype="object")
+    all_patent_orgs = []
+if all_patent_orgs:
+    selected_patent_org = st.selectbox("Select a patent organization", all_patent_orgs)
+    org_df = patents[patent_org_series == selected_patent_org].copy()
+    org_topic_counts = org_df["topic_name"].value_counts().reset_index()
+    org_topic_counts.columns = ["topic_name", "count"]
+    fig = px.bar(org_topic_counts, x="topic_name", y="count")
+    st.plotly_chart(fig, use_container_width=True, key="trl_patent_org_lens")
+    latest_year = ""
+    if "year" in org_df.columns and org_df["year"].notna().any():
+        latest_year = f" Latest visible patent year: **{int(org_df['year'].dropna().astype(int).max())}**."
+    st.info(
+        f"{selected_patent_org} appears in **{len(org_df)} patent records** across the visible topic set." + latest_year
+    )
+else:
+    st.info("No clean patent-organization data is available for the patent organization lens yet.")

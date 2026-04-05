@@ -36,14 +36,21 @@ if filtered.empty:
 
 filtered["top_level_tech"] = filtered["top_level_tech"].fillna("Other / Unmapped").astype(str).str.strip().replace("", "Other / Unmapped")
 filtered["sub_tech"] = filtered["sub_tech"].fillna("").astype(str).str.strip()
+known_theme_df = filtered[filtered["top_level_tech"] != "Other / Unmapped"].copy()
+unmapped_count = int((filtered["top_level_tech"] == "Other / Unmapped").sum())
+unmapped_share = unmapped_count / max(len(filtered), 1)
 
 st.subheader("Technology Theme Overview")
-tech_counts = filtered["top_level_tech"].value_counts().reset_index()
+plot_df = known_theme_df if not known_theme_df.empty else filtered
+tech_counts = plot_df["top_level_tech"].value_counts().reset_index()
 tech_counts.columns = ["top_level_tech", "count"]
 fig = px.bar(tech_counts.sort_values("count", ascending=True).tail(12), x="count", y="top_level_tech", orientation="h")
 st.plotly_chart(fig, use_container_width=True)
 
-top_theme, top_theme_count = top_known_value(filtered["top_level_tech"], fallback="Other / Unmapped")
+if unmapped_count > 0:
+    st.caption(f"**Other / Unmapped** is excluded from the overview ranking for readability. It still represents **{unmapped_count} patents** ({unmapped_share:.0%} of the current view).")
+
+top_theme, top_theme_count = top_known_value(known_theme_df["top_level_tech"] if not known_theme_df.empty else filtered["top_level_tech"], fallback="Other / Unmapped")
 focus_share = top_theme_count / max(len(filtered), 1)
 if top_theme == "Other / Unmapped":
     st.info("The visible portfolio is spread across multiple mapped themes, with a meaningful share still sitting outside the named business-friendly technology buckets.")
@@ -53,7 +60,7 @@ else:
     st.info(f"The current view is diversified across several mapped technology themes, with **{top_theme}** emerging as the leading directional signal.")
 
 st.subheader("Technology Theme Trends Over Time")
-trend_df = filtered.dropna(subset=["filing_year"]).copy()
+trend_df = known_theme_df.dropna(subset=["filing_year"]).copy() if not known_theme_df.empty else filtered.dropna(subset=["filing_year"]).copy()
 if not trend_df.empty:
     trend_df["filing_year"] = trend_df["filing_year"].astype(int)
     top_themes = trend_df["top_level_tech"].value_counts().head(5).index.tolist()
@@ -69,7 +76,9 @@ with left:
     heat = filtered.copy()
     heat["company"] = heat["company"].fillna("Unassigned").astype(str).str.strip().replace("", "Unassigned")
     top_companies = clean_named_series(heat["company"], fallback="Unassigned").value_counts().head(10).index.tolist()
-    top_themes = heat["top_level_tech"].value_counts().head(8).index.tolist()
+    top_themes = heat[heat["top_level_tech"] != "Other / Unmapped"]["top_level_tech"].value_counts().head(8).index.tolist()
+    if not top_themes:
+        top_themes = heat["top_level_tech"].value_counts().head(8).index.tolist()
     heat = heat[heat["company"].isin(top_companies) & heat["top_level_tech"].isin(top_themes)]
     if not heat.empty:
         company_heat = heat.groupby(["company", "top_level_tech"]).size().reset_index(name="count")
@@ -83,7 +92,9 @@ with right:
     heat["country_name"] = heat["country_name"].fillna("Unknown").astype(str).str.strip().replace("", "Unknown")
     known_countries = heat[heat["country_name"].str.lower() != "unknown"]
     top_countries = known_countries["country_name"].value_counts().head(10).index.tolist()
-    top_themes = heat["top_level_tech"].value_counts().head(8).index.tolist()
+    top_themes = heat[heat["top_level_tech"] != "Other / Unmapped"]["top_level_tech"].value_counts().head(8).index.tolist()
+    if not top_themes:
+        top_themes = heat["top_level_tech"].value_counts().head(8).index.tolist()
     heat = heat[heat["country_name"].isin(top_countries) & heat["top_level_tech"].isin(top_themes)]
     if not heat.empty:
         country_heat = heat.groupby(["country_name", "top_level_tech"]).size().reset_index(name="count")
