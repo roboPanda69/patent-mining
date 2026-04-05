@@ -11,7 +11,7 @@ from utils.trl_loader import (
     load_trl_papers_by_institution,
     load_trl_topic_metrics,
 )
-from utils.trl_utils import best_known_label
+from utils.trl_utils import best_known_label, estimate_trl_score
 from utils.ui_helpers import clickable_patent_table, clean_named_series
 
 st.title("Technology Maturity Radar")
@@ -65,19 +65,40 @@ overview_cols = [
 if len(view_metrics) <= 6:
     cols = st.columns(min(3, max(1, len(view_metrics))))
     for i, (_, row) in enumerate(view_metrics.iterrows()):
+        trl_score = estimate_trl_score(
+            paper_count=int(row["paper_count"]),
+            patent_count=int(row["patent_count"]),
+            grant_ratio=float(row.get("grant_ratio", 0.0) or 0.0),
+            maturity_band=str(row.get("maturity_band", "")),
+        )
         with cols[i % len(cols)]:
             with st.container(border=True):
                 st.markdown(f"### {row['topic_name']}")
+                st.metric("TRL", trl_score)
                 st.metric("Papers", int(row["paper_count"]))
                 st.metric("Patents", int(row["patent_count"]))
                 st.write(f"**Top Institution:** {row['top_institution']}")
                 st.write(f"**Top Company:** {row['top_company']}")
                 st.success(f"**Maturity Band:** {row['maturity_band']}")
-                if "trl_stage_band" in row:
-                    st.info(f"**Visible TRL-style Stage:** {row['trl_stage_band']} ({row['trl_stage_name']})")
                 st.caption(row["maturity_reason"])
 else:
-    st.dataframe(view_metrics[[c for c in overview_cols if c in view_metrics.columns]], use_container_width=True, hide_index=True)
+    table_df = view_metrics.copy()
+    table_df["trl_score"] = table_df.apply(
+        lambda row: estimate_trl_score(
+            paper_count=int(row["paper_count"]),
+            patent_count=int(row["patent_count"]),
+            grant_ratio=float(row.get("grant_ratio", 0.0) or 0.0),
+            maturity_band=str(row.get("maturity_band", "")),
+        ),
+        axis=1,
+    )
+
+    st.dataframe(
+        table_df[["topic_name", "trl_score", "paper_count", "patent_count", "top_institution", "top_company", "maturity_band"]]
+        .rename(columns={"trl_score": "TRL"}),
+        use_container_width=True,
+        hide_index=True,
+    )
 
 st.divider()
 st.subheader("Research vs Patent Matrix")
@@ -87,7 +108,7 @@ fig = px.scatter(
     x="paper_count",
     y="patent_count",
     size=np.maximum(scatter_df["paper_citations"].fillna(0), 1),
-    color="trl_stage_band" if "trl_stage_band" in scatter_df.columns else "maturity_band",
+    color="maturity_band",
     hover_name="topic_name",
     text="topic_name",
 )
@@ -104,11 +125,18 @@ topic_metric = metrics[metrics["topic_name"] == selected_topic].iloc[0]
 st.divider()
 st.subheader(f"Topic Deep-Dive — {selected_topic}")
 
+topic_trl_score = estimate_trl_score(
+    paper_count=int(topic_metric["paper_count"]),
+    patent_count=int(topic_metric["patent_count"]),
+    grant_ratio=float(topic_metric.get("grant_ratio", 0.0) or 0.0),
+    maturity_band=str(topic_metric.get("maturity_band", "")),
+)
+
 a, b, c, d = st.columns(4)
-a.metric("Papers", int(topic_metric["paper_count"]))
-b.metric("Patents", int(topic_metric["patent_count"]))
-c.metric("Maturity Band", str(topic_metric["maturity_band"]))
-d.metric("TRL-style Stage", str(topic_metric.get("trl_stage_score", "-")))
+a.metric("TRL", topic_trl_score)
+b.metric("Papers", int(topic_metric["paper_count"]))
+c.metric("Patents", int(topic_metric["patent_count"]))
+d.metric("Maturity Band", str(topic_metric["maturity_band"]))
 st.info(topic_metric["maturity_reason"])
 if "trl_stage_reason" in topic_metric:
     st.caption(f"{topic_metric['trl_stage_band']} — {topic_metric['trl_stage_name']}. {topic_metric['trl_stage_reason']}")

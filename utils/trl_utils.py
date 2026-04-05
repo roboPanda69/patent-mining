@@ -279,3 +279,53 @@ def build_topic_metrics(normalized_df: pd.DataFrame) -> pd.DataFrame:
         out["maturity_band"] = pd.Categorical(out["maturity_band"], categories=MATURITY_ORDER + ["Insufficient Signal"], ordered=True)
         out = out.sort_values(["maturity_band", "patent_count", "paper_count"], ascending=[True, False, False]).reset_index(drop=True)
     return out
+
+def estimate_trl_score(
+    paper_count: int,
+    patent_count: int,
+    grant_ratio: float,
+    maturity_band: str | None = None,
+) -> int:
+    """
+    Transparent TRL score estimate based on visible paper/patent balance and grant depth.
+    This is intentionally simple and interpretable.
+    """
+    if paper_count <= 0 and patent_count <= 0:
+        return 0
+
+    band = str(maturity_band or "").strip()
+
+    if band == "Research-heavy":
+        if patent_count <= 0:
+            return 2
+        if patent_count < max(3, paper_count * 0.25):
+            return 3
+        return 4
+
+    if band == "Translating to industry":
+        if grant_ratio >= 0.30:
+            return 5
+        return 4
+
+    if band == "Commercializing":
+        if grant_ratio >= 0.45:
+            return 7
+        return 6
+
+    if band == "Mature / scaled":
+        if grant_ratio >= 0.60:
+            return 9
+        return 8
+
+    # fallback when maturity band is missing or unexpected
+    if patent_count <= 0:
+        return 2
+    if paper_count >= patent_count * 2:
+        return 3
+    if patent_count < paper_count * 1.2:
+        return 5
+    if grant_ratio < 0.45:
+        return 6
+    if grant_ratio < 0.60:
+        return 8
+    return 9
