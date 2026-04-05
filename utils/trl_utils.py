@@ -5,10 +5,33 @@ import pandas as pd
 from utils.trl_config import TOPIC_CANONICAL_MAP, MATURITY_ORDER, INSTITUTION_HINT_WORDS, UNKNOWN_VALUES
 
 TRL_STAGE_BANDS = [
-    ("TRL-like 1-3", "Research / feasibility"),
-    ("TRL-like 4-6", "Technology development / demonstration"),
-    ("TRL-like 7-9", "Pilot / commercialization / scale"),
+    ("TRL 1-3", "Research / feasibility"),
+    ("TRL 4-6", "Technology development / demonstration"),
+    ("TRL 7-9", "Pilot / commercialization / scale"),
 ]
+
+
+
+def format_trl_label(score):
+    try:
+        score_int = int(score)
+    except Exception:
+        return "TRL -"
+    score_int = max(1, min(9, score_int))
+    return f"TRL {score_int}"
+
+
+def format_trl_band_from_score(score):
+    try:
+        score_int = int(score)
+    except Exception:
+        return "TRL Unknown"
+    score_int = max(1, min(9, score_int))
+    if score_int <= 3:
+        return "TRL 1-3"
+    if score_int <= 6:
+        return "TRL 4-6"
+    return "TRL 7-9"
 
 
 COUNTRY_ALIASES = {

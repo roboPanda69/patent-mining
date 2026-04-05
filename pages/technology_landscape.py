@@ -89,6 +89,7 @@ selected_bucket = st.selectbox("Select a technology bucket", bucket_options)
 
 selected_ids = cpc_df[cpc_df["cpc_display"] == selected_bucket]["patent_id"].dropna().astype(str).unique().tolist()
 bucket_patents = filtered[filtered["patent_id"].astype(str).isin(selected_ids)].copy().drop_duplicates(subset=["patent_id"])
+st.caption(f"Patent count for **{selected_bucket}**: **{len(bucket_patents)}**")
 clickable_patent_table(
     bucket_patents,
     title="Technology Bucket Patents",
