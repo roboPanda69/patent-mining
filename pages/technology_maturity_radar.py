@@ -180,26 +180,26 @@ if all_institutions:
 else:
     st.info("No institution-level paper data is available for the academic institution lens yet.")
 
-st.subheader("Patent Organization Lens")
-st.caption("This section looks only at patent organizations / assignees. It does not combine patent and paper counts together.")
-if not patents.empty and "organization_name" in patents.columns:
-    patent_org_series = clean_named_series(patents["organization_name"], fallback="Unknown")
-    all_patent_orgs = sorted(patent_org_series[patent_org_series.str.lower() != "unknown"].unique().tolist())
-else:
-    patent_org_series = pd.Series(dtype="object")
-    all_patent_orgs = []
-if all_patent_orgs:
-    selected_patent_org = st.selectbox("Select a patent organization", all_patent_orgs)
-    org_df = patents[patent_org_series == selected_patent_org].copy()
-    org_topic_counts = org_df["topic_name"].value_counts().reset_index()
-    org_topic_counts.columns = ["topic_name", "count"]
-    fig = px.bar(org_topic_counts, x="topic_name", y="count")
-    st.plotly_chart(fig, use_container_width=True, key="trl_patent_org_lens")
-    latest_year = ""
-    if "year" in org_df.columns and org_df["year"].notna().any():
-        latest_year = f" Latest visible patent year: **{int(org_df['year'].dropna().astype(int).max())}**."
-    st.info(
-        f"{selected_patent_org} appears in **{len(org_df)} patent records** across the visible topic set." + latest_year
-    )
-else:
-    st.info("No clean patent-organization data is available for the patent organization lens yet.")
+# st.subheader("Patent Organization Lens")
+# st.caption("This section looks only at patent organizations / assignees. It does not combine patent and paper counts together.")
+# if not patents.empty and "organization_name" in patents.columns:
+#     patent_org_series = clean_named_series(patents["organization_name"], fallback="Unknown")
+#     all_patent_orgs = sorted(patent_org_series[patent_org_series.str.lower() != "unknown"].unique().tolist())
+# else:
+#     patent_org_series = pd.Series(dtype="object")
+#     all_patent_orgs = []
+# if all_patent_orgs:
+#     selected_patent_org = st.selectbox("Select a patent organization", all_patent_orgs)
+#     org_df = patents[patent_org_series == selected_patent_org].copy()
+#     org_topic_counts = org_df["topic_name"].value_counts().reset_index()
+#     org_topic_counts.columns = ["topic_name", "count"]
+#     fig = px.bar(org_topic_counts, x="topic_name", y="count")
+#     st.plotly_chart(fig, use_container_width=True, key="trl_patent_org_lens")
+#     latest_year = ""
+#     if "year" in org_df.columns and org_df["year"].notna().any():
+#         latest_year = f" Latest visible patent year: **{int(org_df['year'].dropna().astype(int).max())}**."
+#     st.info(
+#         f"{selected_patent_org} appears in **{len(org_df)} patent records** across the visible topic set." + latest_year
+#     )
+# else:
+#     st.info("No clean patent-organization data is available for the patent organization lens yet.")

@@ -113,6 +113,8 @@ if len(sub_tech_signal) > 0:
     sub_label, sub_count = top_known_value(theme_patents[theme_patents["sub_tech"] != ""]["sub_tech"], fallback="Not clearly identified")
     st.caption(f"Within **{selected_theme}**, the strongest visible sub-theme is **{sub_label}** ({sub_count} patents).")
 
+st.metric("Patent Count", len(theme_patents))
+
 clickable_patent_table(
     theme_patents,
     title="Theme Patent Table",

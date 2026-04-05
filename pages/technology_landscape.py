@@ -89,11 +89,9 @@ selected_bucket = st.selectbox("Select a technology bucket", bucket_options)
 
 selected_ids = cpc_df[cpc_df["cpc_display"] == selected_bucket]["patent_id"].dropna().astype(str).unique().tolist()
 bucket_patents = filtered[filtered["patent_id"].astype(str).isin(selected_ids)].copy().drop_duplicates(subset=["patent_id"])
-metric_cols = st.columns([1.2, 4])
-with metric_cols[0]:
-    st.metric("Patent Count", len(bucket_patents))
-with metric_cols[1]:
-    st.caption(f"Visible patents mapped to **{selected_bucket}** in the current filter view.")
+st.caption(f"Visible patents mapped to **{selected_bucket}** in the current filter view.")
+st.metric("Patent Count", len(bucket_patents))
+    
 clickable_patent_table(
     bucket_patents,
     title="Technology Bucket Patents",
